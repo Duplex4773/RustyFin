@@ -2,6 +2,8 @@
 
 RustyFin is a Windows x64 Jellyfin player built with Rust and GPUI. Sign in with Quick Connect, browse video, music and live TV, and play the original media source. The client saves the sign-in in Windows Credential Manager and reports playback progress to Jellyfin.
 
+[Changelog](CHANGELOG.md)
+
 ## Run
 
 Install the stable Rust MSVC toolchain, the Visual Studio C++ build tools and a Windows SDK. From the project directory in PowerShell, run
@@ -55,7 +57,7 @@ Account tokens and service keys are stored in Windows Credential Manager. New in
 
 | Where | Controls |
 | --- | --- |
-| Browse | Arrow keys navigate cards and shelves. Enter opens a title. Page Up and Page Down change pages. The slash key opens Search. Tab and Shift+Tab move between buttons. |
+| Browse | Scroll through the library continuously. Arrow keys move between posters. Page Up and Page Down move one screen, and Home and End jump to the ends. When sorting by title, select a letter on the right or type it to jump. On a controller, move right from the last column to enter the alphabet rail, choose a letter with the D-pad, and press A. Enter opens a title. Back returns to its poster. The slash key opens Search. Tab and Shift+Tab move between buttons. |
 | Playback | Space or Enter pauses and resumes. Left and Right seek ten seconds. Up and Down adjust volume. T previews a seek. Left and Right move the preview, Enter seeks, and Escape cancels. M toggles mute, O opens playback options, and the square brackets adjust mpv zoom. F or F11 switches fullscreen. Escape leaves fullscreen or returns to the title. |
 | XInput controller | D-pad or left stick navigates. A activates, B goes back, shoulders move focus, Y opens playback settings, X previews a seek, and Start sends Space. |
 

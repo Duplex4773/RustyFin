@@ -72,7 +72,8 @@ impl Library {
                     })
                 },
             )),
-            Screen::Library(..) | Screen::Search(_) => {
+            Screen::Library(..) => Box::new(self.state.wall.near_items()),
+            Screen::Search(_) => {
                 let columns = screens::CatalogGrid::for_window(w).columns;
                 let first = self.state.scroll.top_item().saturating_sub(1);
                 let end = (self.state.scroll.bottom_item() + 2).max(first + 3);

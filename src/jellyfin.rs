@@ -15,6 +15,7 @@ pub mod live;
 mod media;
 pub mod offline;
 pub mod trickplay;
+pub use catalog::catalog_initial;
 pub use catalog::{Art, ArtKind, CatalogQuery, LIBRARY_PAGE_SIZE, PAGE_SIZE, Shelf, ShelfKind};
 pub use media::{Chapter, Lyric, MediaChoice, Segment};
 
@@ -59,6 +60,8 @@ pub struct Item {
     pub copies: Vec<Item>,
     pub id: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_name: Option<String>,
     #[serde(default, rename = "Type")]
     pub kind: String,
     pub can_download: Option<bool>,

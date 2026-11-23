@@ -1,6 +1,7 @@
 mod anime;
 mod artwork;
 mod captions;
+mod catalog_wall;
 mod customization;
 mod downloads;
 mod editor;
@@ -82,6 +83,7 @@ struct ViewState {
     selection: usize,
     shelf: Option<usize>,
     scroll: ScrollHandle,
+    wall: catalog_wall::CatalogWall,
 }
 
 impl ViewState {
@@ -104,6 +106,7 @@ impl ViewState {
             selection: 0,
             shelf: None,
             scroll: ScrollHandle::new(),
+            wall: Default::default(),
         }
     }
 }
@@ -456,6 +459,7 @@ impl Library {
         self.rebind = None;
         self.filters_open = false;
         self.keyboard = false;
+        self.state.wall.suspend();
         let previous = std::mem::replace(&mut self.state, ViewState::new(screen));
         if matches!(
             self.state.screen,
@@ -492,10 +496,12 @@ impl Library {
             self.message.clear();
             self.rebind = None;
             self.state = previous;
+            if matches!(self.state.screen, Screen::Library(..)) {
+                self.keyboard = true;
+            }
             self.failure = None;
             self.state.ratings_pending = false;
-            if matches!(&self.state.screen,Screen::Library(_,q) if q.favorites)
-                || matches!(&self.state.screen,Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
+            if matches!(&self.state.screen,Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
             {
                 self.load(window, cx);
             }
@@ -596,23 +602,7 @@ impl Library {
                     Ok(())
                 },
             ),
-            Screen::Library(tab, mut q) => {
-                match tab {
-                    Tab::Recommended => {
-                        q.sort = "CommunityRating";
-                        q.descending = true;
-                    }
-                    Tab::Collections => q.kind = "BoxSet",
-                    Tab::Playlists => q.kind = "Playlist",
-                    Tab::Browse => {}
-                }
-                self.work(
-                    window,
-                    cx,
-                    move || server.catalog(&q, None, offset, crate::jellyfin::LIBRARY_PAGE_SIZE),
-                    Self::receive_page,
-                );
-            }
+            Screen::Library(..) => cx.notify(),
             Screen::Search(query) if !query.is_empty() => {
                 let servers = self.browse_servers();
                 let people = self.people_search;
@@ -786,6 +776,9 @@ impl Library {
     }
 
     fn refresh(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.state.screen, Screen::Library(..)) {
+            self.state.wall.invalidate();
+        }
         self.library_list_job = None;
         self.formats.clear();
         self.artwork.retry();
@@ -870,6 +863,11 @@ impl Library {
         }
     }
     fn open_item(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.state.screen, Screen::Library(..))
+            && let Some(index) = self.state.wall.index_of(&item.id)
+        {
+            self.state.selection = index;
+        }
         if !item.copies.is_empty() {
             self.navigate(
                 Screen::Copies {
@@ -1237,6 +1235,9 @@ impl Library {
             if let Some(page) = &mut state.page {
                 page.items.iter_mut().for_each(&update);
             }
+            if let Screen::Library(_, q) = &state.screen {
+                state.wall.update_items(q, &update);
+            }
         }
         self.featured.iter_mut().for_each(&update);
         for shelf in &mut self.shelves {
@@ -1440,6 +1441,12 @@ impl Library {
                 self.focus.focus(window);
             }
             self.keyboard = true;
+            if matches!(self.state.screen, Screen::Library(..)) && self.catalog_key(key, window, cx)
+            {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             match key {
                 "escape" | "backspace" => self.back(window, cx),
                 "f11" => window.toggle_fullscreen(),

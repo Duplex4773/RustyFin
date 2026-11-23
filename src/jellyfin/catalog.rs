@@ -7,6 +7,17 @@ pub const LIBRARY_PAGE_SIZE: usize = 90;
 const FIELDS: &str = "Overview,Genres,MediaSources,ProviderIds";
 const MOVING_PICTURES: &str = "Movie,Series,Episode,Video,Audio,MusicAlbum,MusicArtist,MusicVideo";
 
+pub fn catalog_initial(sort_name: Option<&str>, name: &str) -> char {
+    sort_name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(name)
+        .trim_start()
+        .chars()
+        .next()
+        .filter(char::is_ascii_alphabetic)
+        .map_or('#', |c| c.to_ascii_uppercase())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Art {
     pub origin: Option<String>,
@@ -314,11 +325,52 @@ impl Server {
         offset: usize,
         limit: usize,
     ) -> Result<Page> {
+        read(self.catalog_request(q, search, offset, limit)?.query(&[(
+            "fields",
+            "Overview,Genres,MediaSources,ProviderIds,SortName",
+        )]))
+    }
+
+    /// Read only sort labels for the alphabet rail, in exactly the order of the poster grid.
+    pub fn catalog_letters(&self, q: &CatalogQuery, offset: usize) -> Result<(Vec<char>, usize)> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Entry {
+            name: String,
+            sort_name: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Entries {
+            items: Vec<Entry>,
+            total_record_count: usize,
+        }
+        let entries: Entries = read(self.catalog_request(q, None, offset, 512)?.query(&[
+            ("fields", "SortName"),
+            ("enableImages", "false"),
+            ("enableUserData", "false"),
+        ]))?;
+        Ok((
+            entries
+                .items
+                .iter()
+                .map(|e| catalog_initial(e.sort_name.as_deref(), &e.name))
+                .collect(),
+            entries.total_record_count,
+        ))
+    }
+
+    fn catalog_request(
+        &self,
+        q: &CatalogQuery,
+        search: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<reqwest::blocking::RequestBuilder> {
         if search.is_none() && q.kind == "Folder" {
             let mut req = self.get(&["Items"]).query(&[
                 ("userId", self.user_id()?),
                 ("recursive", "false"),
-                ("fields", FIELDS),
                 ("sortBy", "IsFolder,SortName"),
                 ("startIndex", &offset.to_string()),
                 ("limit", &limit.to_string()),
@@ -326,12 +378,11 @@ impl Server {
             if let Some(parent) = &q.library {
                 req = req.query(&[("parentId", parent)]);
             }
-            return read(req);
+            return Ok(req);
         }
         let mut request = self.get(&["Items"]).query(&[
             ("userId", self.user_id()?),
             ("recursive", "true"),
-            ("fields", FIELDS),
             (
                 "includeItemTypes",
                 if search.is_some() {
@@ -367,7 +418,7 @@ impl Server {
         if q.favorites {
             request = request.query(&[("filters", "IsFavorite")]);
         }
-        read(request)
+        Ok(request)
     }
 
     pub fn discover(&self) -> Result<Vec<Shelf>> {

@@ -97,12 +97,16 @@ impl Library {
                     plan.extend(page.items.iter().filter_map(Item::landscape));
                 }
             }
+            Screen::Library(..) => {
+                let poster =
+                    super::screens::CatalogGrid::for_wall(w, self.state.screen.alphabetical())
+                        .poster;
+                plan.extend(self.state.wall.near_items().filter_map(|i| i.art(poster)));
+            }
             _ => {
                 if let Some(page) = &self.state.page {
                     let poster = match self.state.screen {
-                        Screen::Library(..) | Screen::Search(_) => {
-                            super::screens::CatalogGrid::for_window(w).poster
-                        }
+                        Screen::Search(_) => super::screens::CatalogGrid::for_window(w).poster,
                         _ => ArtKind::Poster,
                     };
                     plan.extend(page.items.iter().filter_map(|i| i.art(poster)));

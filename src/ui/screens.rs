@@ -1,4 +1,5 @@
 mod anime;
+mod catalog;
 mod discover;
 pub(super) use discover::{featured_titles, marquee_art};
 mod editor;
@@ -179,6 +180,7 @@ fn coat(angle: f32, from: u32, to: u32, start: f32, end: f32) -> Div {
 }
 const CATALOG_GAP: f32 = 6.;
 
+#[derive(Clone, Copy)]
 pub(super) struct CatalogGrid {
     pub(super) columns: usize,
     card_width: f32,
@@ -586,6 +588,7 @@ impl Library {
             edit(q);
         }
         self.state.selection = 0;
+        self.state.wall = Default::default();
         self.state.offset = 0;
         self.state.page = None;
         self.state.scroll = ScrollHandle::new();
@@ -772,7 +775,7 @@ impl Library {
             .flex()
             .flex_col()
             .child(header)
-            .child(self.grid(w, cx, "No titles match this view."))
+            .child(self.catalog_wall(q, w, cx))
     }
 
     fn search_view(&self, term: &str, w: &Window, cx: &mut Context<Self>) -> Div {
@@ -1369,6 +1372,7 @@ impl Render for Library {
         }
         self.load_artwork(w, cx);
         self.load_card_formats(w, cx);
+        self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
         let content = if self.server.is_none() {
             self.rail = Default::default();
