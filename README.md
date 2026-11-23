@@ -1,4 +1,9 @@
-# RustyFin
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/waterline.png">
+    <img src="assets/brand/waterline-on-light.png" alt="RustyFin" width="320">
+  </picture>
+</h1>
 
 RustyFin is a Windows x64 Jellyfin player built with Rust and GPUI. Sign in with Quick Connect, browse video, music and live TV, and play the original media source. The client saves the sign-in in Windows Credential Manager and reports playback progress to Jellyfin.
 

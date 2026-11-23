@@ -5183,6 +5183,7 @@ dependencies = [
  "chrono",
  "discord-rich-presence",
  "dolby_vision",
+ "embed-resource",
  "gpui",
  "gpui-component",
  "image",

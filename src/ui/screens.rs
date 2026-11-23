@@ -1407,7 +1407,7 @@ impl Library {
             .p_8()
             .rounded_xl()
             .bg(rgb(SURFACE))
-            .child(label("RustyFin", 15., MUTED).font_weight(FontWeight::SEMIBOLD));
+            .child(crate::navigation_icons::waterline(164., 40.));
         if let Some(code) = &self.code {
             panel = panel
                 .child(title("Pair this device", 28.))

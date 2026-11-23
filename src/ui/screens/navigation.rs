@@ -13,6 +13,27 @@ struct Link {
     active: bool,
 }
 
+fn nav_button(id: ElementId, width: f32, active: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .focusable()
+        .tab_stop(true)
+        .flex_none()
+        .w(px(width))
+        .h(px(34.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(7.))
+        .px(px(6.))
+        .rounded_md()
+        .cursor_pointer()
+        .text_color(rgb(0xb8bcc4))
+        .when(active, |d| d.bg(rgb(0x30372b)).text_color(rgb(LIME)))
+        .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(TEXT)))
+        .focus(|d| d.border_1().border_color(rgb(LIME)))
+}
+
 impl Link {
     fn new(
         name: impl Into<SharedString>,
@@ -35,56 +56,27 @@ impl Link {
         show_name: bool,
         cx: &Context<Library>,
     ) -> Stateful<Div> {
-        let home = matches!(self.screen, Screen::Discover);
         let target = self.screen.clone();
-        let button = div()
-            .id(id)
-            .focusable()
-            .tab_stop(true)
-            .flex_none()
-            .w(px(width))
-            .h(px(34.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(7.))
-            .px(px(6.))
-            .rounded_md()
-            .cursor_pointer()
-            .text_color(rgb(if self.active || home { TEXT } else { 0xb8bcc4 }))
-            .when(self.active, |d| d.bg(rgb(0x30372b)).text_color(rgb(LIME)))
-            .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(TEXT)))
-            .focus(|d| d.border_1().border_color(rgb(LIME)))
+        let button = nav_button(id, width, self.active)
             .child(
                 svg()
                     .path(self.glyph)
-                    .size(px(if home { 21. } else { 17. }))
+                    .size(px(17.))
                     .flex_none()
-                    .text_color(rgb(if home || self.active { LIME } else { 0xb8bcc4 })),
+                    .text_color(rgb(if self.active { LIME } else { 0xb8bcc4 })),
             )
             .when(show_name, |d| {
                 d.child(
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(if home { 16. } else { 13. }))
-                        .font_weight(if home {
-                            FontWeight::BOLD
-                        } else {
-                            FontWeight::SEMIBOLD
-                        })
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child(self.name.clone()),
                 )
             });
-        tip(
-            button,
-            if home {
-                "Home".to_owned()
-            } else {
-                self.name.to_string()
-            },
-        )
-        .on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
+        tip(button, self.name.clone())
+            .on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
     }
 }
 
@@ -118,12 +110,8 @@ impl Library {
             Screen::Library(tab, q) => Some((*tab, q)),
             _ => None,
         };
-        let home = Link::new(
-            "RustyFin",
-            "nav/home",
-            Screen::Discover,
-            matches!(section, Screen::Discover),
-        );
+        let home = nav_button("nav-home".into(), 112., matches!(section, Screen::Discover))
+            .child(crate::navigation_icons::waterline(96., 24.));
         let mut tabs = vec![
             Link::new(
                 "Favourites",
@@ -192,7 +180,10 @@ impl Library {
             })
             .border_1()
             .border_color(Hsla::from(fill.blend(rgba(0xffffff46))).opacity(0.64))
-            .child(home.button("nav-home".into(), 112., true, cx));
+            .child(
+                tip(home, "Home")
+                    .on_click(cx.listener(|s, _, w, cx| s.navigate(Screen::Discover, w, cx))),
+            );
         let mut overflow = Vec::new();
         // Reserve the home link, More and the three utility buttons before fitting library names.
         // Budget for the floating width even while docked to keep the shortcuts in place.

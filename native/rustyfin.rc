@@ -1,0 +1,2 @@
+// GPUI loads the application's window class icon from group icon resource 1.
+1 ICON "assets/brand/waterline.ico"
