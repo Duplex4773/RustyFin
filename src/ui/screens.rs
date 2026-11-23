@@ -707,6 +707,7 @@ impl Library {
         }
         self.state.selection = 0;
         self.state.wall = Default::default();
+        self.state.wheel_motion = None;
         self.state.offset = 0;
         self.state.page = None;
         self.state.scroll = ScrollHandle::new();
@@ -919,14 +920,16 @@ impl Library {
                         div().flex().gap_2().children(
                             [(false, "Titles"), (true, "People")].into_iter().map(
                                 |(people, name)| {
-                                    pill(name, name, None, self.people_search == people).on_click(
-                                        cx.listener(move |s, _, w, cx| {
-                                            s.people_search = people;
+                                    pill(name, name, None, self.state.people_search == people)
+                                        .on_click(cx.listener(move |s, _, w, cx| {
+                                            if s.state.people_search != people {
+                                                s.history.clear_forward();
+                                            }
+                                            s.state.people_search = people;
                                             s.state.offset = 0;
                                             s.state.page = None;
                                             s.load(w, cx);
-                                        }),
-                                    )
+                                        }))
                                 },
                             ),
                         ),
@@ -1487,6 +1490,7 @@ impl Library {
         div().size_full().child(
             div()
                 .id("pair-scroll")
+                .track_scroll(&self.state.scroll)
                 .size_full()
                 .overflow_y_scroll()
                 .child(
@@ -1514,7 +1518,10 @@ impl Render for Library {
             .text_color(rgb(TEXT))
             .font_family("Segoe UI")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key));
+            .capture_any_mouse_down(cx.listener(|s, _, _, _| s.state.wheel_motion = None))
+            .on_key_down(cx.listener(Self::key))
+            .child(Self::mouse_navigation(cx))
+            .children(self.smooth_scrolling(w, cx));
         if self.player.is_some() {
             self.load_trickplay(w, cx);
             self.load_artwork(w, cx);
@@ -1563,8 +1570,8 @@ impl Render for Library {
                 Screen::Search(term) => self.search_view(term, w, cx),
                 Screen::Live(_) | Screen::Guide(_) | Screen::Timers(_) => self.live_view(cx),
                 Screen::Settings(page) => self.settings(*page, cx),
-                Screen::Explore => self.explore_view(cx),
-                Screen::Anime => self.anime_view(cx),
+                Screen::Explore | Screen::ExploreTitle(_) => self.explore_view(cx),
+                Screen::Anime | Screen::AnimeTitle(_) => self.anime_view(cx),
                 Screen::Copies { item, play } => self.copy_picker(item, *play, cx),
                 Screen::Downloads => self.download_view(cx),
             }

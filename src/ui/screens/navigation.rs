@@ -92,11 +92,7 @@ impl Library {
     pub(super) fn top_navigation(&self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
         let screen = &self.state.screen;
-        let scroll = if matches!(screen, Screen::Library(..)) {
-            self.state.wall.scroll.0.borrow().base_handle.clone()
-        } else {
-            self.state.scroll.clone()
-        };
+        let scroll = self.state.page_scroll();
         let distance = (f32::from(w.viewport_size().height) * 0.32).clamp(120., 320.);
         let progress = move |y: Pixels| (-f32::from(y) / distance).clamp(0., 1.);
         let docked = progress(scroll.offset().y);
@@ -109,6 +105,7 @@ impl Library {
         // Keep the originating library highlighted as users drill into titles and their cast.
         let section = if matches!(screen, Screen::Detail(..) | Screen::Copies { .. }) {
             self.history
+                .back
                 .iter()
                 .rev()
                 .map(|v| &v.screen)
@@ -230,7 +227,13 @@ impl Library {
                 "Explore",
                 "nav/explore",
                 Screen::Explore,
-                matches!(section, Screen::Explore | Screen::Anime),
+                matches!(
+                    section,
+                    Screen::Explore
+                        | Screen::ExploreTitle(_)
+                        | Screen::Anime
+                        | Screen::AnimeTitle(_)
+                ),
             ),
             Link::new(
                 "Live TV",

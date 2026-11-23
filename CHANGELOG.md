@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Mouse-wheel scrolling eases into place on browsing pages and in playback menus. Fine scrolling input stays immediate, and RustyFin respects the Windows animation setting.
+- Use the mouse Back and Forward buttons to revisit pages, including the selected library poster and scroll position. During playback, Back closes the current player menu or returns to browsing.
 - Recently Added TV uses the same portrait posters as Recently Added Movies. Both rows centre titles and years beneath the artwork and show ratings when available. Series posters also show unwatched episode counts and label ongoing shows with “Present”.
 - On Discover, colours from the featured artwork flow behind Continue Watching and Recently Added TV, fading to charcoal by Recently Added Movies. Only Continue Watching has a frosted background, with a soft highlight that follows the focused card.
 - Navigation floats over featured artwork and picks up its colour. Scrolling docks the bar at the top and makes it more opaque. Favourites, Collections and server library shortcuts are available directly, with additional destinations in More.

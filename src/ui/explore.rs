@@ -132,7 +132,13 @@ impl Library {
             },
         );
     }
-    pub(super) fn explore_title(&mut self, item: Entry, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn load_explore_title(
+        &mut self,
+        item: Entry,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.explore.selected = None;
         let Some(client) = self.explore.client.clone() else {
             return;
         };

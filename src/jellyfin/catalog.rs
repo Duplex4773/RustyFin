@@ -248,7 +248,7 @@ mod discover_tests {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CatalogQuery {
     pub kind: &'static str,
     pub sort: &'static str,

@@ -9,6 +9,8 @@ mod explore;
 mod formats;
 mod gamepad;
 mod glass;
+mod history;
+mod scrolling;
 mod services;
 mod trickplay;
 use downloads::Downloads;
@@ -49,7 +51,9 @@ enum Screen {
     Settings(SettingsPage),
     Downloads,
     Explore,
+    ExploreTitle(Box<crate::seerr::Entry>),
     Anime,
+    AnimeTitle(u64),
     Copies { item: Box<Item>, play: bool },
     Live(bool),
     Guide(Box<Item>),
@@ -87,6 +91,8 @@ enum LibraryReturn {
 
 struct ViewState {
     screen: Screen,
+    reload_on_return: bool,
+    people_search: bool,
     page: Option<Page>,
     seasons: Vec<Item>,
     series_target: Option<Item>,
@@ -112,6 +118,7 @@ struct ViewState {
     selection: usize,
     shelf: Option<usize>,
     scroll: ScrollHandle,
+    wheel_motion: Option<scrolling::WheelMotion>,
     wall: catalog_wall::CatalogWall,
 }
 
@@ -119,6 +126,8 @@ impl ViewState {
     fn new(screen: Screen) -> Self {
         Self {
             screen,
+            reload_on_return: false,
+            people_search: false,
             page: None,
             seasons: Vec::new(),
             series_target: None,
@@ -144,6 +153,7 @@ impl ViewState {
             selection: 0,
             shelf: None,
             scroll: ScrollHandle::new(),
+            wheel_motion: None,
             wall: Default::default(),
         }
     }
@@ -168,7 +178,7 @@ pub struct Library {
     home_dirty: bool,
     search_delay: Option<Task<()>>,
     state: ViewState,
-    history: Vec<ViewState>,
+    history: history::History,
     return_fade: Option<LibraryReturn>,
     shelves: Vec<Shelf>,
     libraries: Vec<Item>,
@@ -185,7 +195,6 @@ pub struct Library {
     shelf_light: glass::ShelfLight,
     menu_focus: playback::MenuFocus,
     filters_open: bool,
-    people_search: bool,
     controls: Controls,
     prefs: Preferences,
     accounts: Vec<crate::jellyfin::Account>,
@@ -225,16 +234,25 @@ impl Library {
             match event {
                 InputEvent::Change => {
                     let term = input.read(cx).value().trim().to_string();
+                    if matches!(&this.state.screen, Screen::Search(current) if current == &term) {
+                        return;
+                    }
+                    this.history.clear_forward();
                     this.search_delay = None;
                     this.job = None;
                     this.busy = !term.is_empty();
+                    let people = this.state.people_search;
                     this.state = ViewState::new(Screen::Search(term));
+                    this.state.people_search = people;
                     this.message.clear();
                     this.search_delay = Some(cx.spawn_in(w, async move |view, cx| {
                         cx.background_executor()
                             .timer(Duration::from_millis(250))
                             .await;
-                        let _ = view.update_in(cx, |s, w, cx| s.load(w, cx));
+                        let _ = view.update_in(cx, |s, w, cx| {
+                            s.search_delay = None;
+                            s.load(w, cx);
+                        });
                     }));
                     cx.notify();
                 }
@@ -274,7 +292,7 @@ impl Library {
             home_dirty: false,
             search_delay: None,
             state: ViewState::new(Screen::Discover),
-            history: vec![],
+            history: Default::default(),
             return_fade: None,
             shelves: vec![],
             libraries: vec![],
@@ -291,7 +309,6 @@ impl Library {
             shelf_light: Default::default(),
             menu_focus: playback::MenuFocus::new(cx),
             filters_open: false,
-            people_search: false,
             controls: Default::default(),
             prefs: Default::default(),
             accounts: vec![],
@@ -499,7 +516,10 @@ impl Library {
         }
     }
 
-    fn navigate(&mut self, screen: Screen, window: &mut Window, cx: &mut Context<Self>) {
+    fn leave_view(&mut self) {
+        self.state.wheel_motion = None;
+        self.state.reload_on_return |=
+            self.busy || self.search_delay.is_some() || !self.message.is_empty();
         self.similar_job = None;
         self.return_fade = None;
         self.formats.expanded = None;
@@ -512,18 +532,12 @@ impl Library {
         self.filters_open = false;
         self.keyboard = false;
         self.state.wall.suspend();
-        let previous = std::mem::replace(&mut self.state, ViewState::new(screen));
-        if matches!(
-            self.state.screen,
-            Screen::Detail(..) | Screen::Guide(..) | Screen::Copies { .. }
-        ) || (matches!(previous.screen, Screen::Settings(SettingsPage::Overview))
-            && matches!(self.state.screen, Screen::Settings(_) | Screen::Downloads))
-        {
-            self.history.push(previous);
-        } else {
-            self.history.clear();
-        }
         self.last_slide = Instant::now();
+    }
+
+    fn navigate(&mut self, screen: Screen, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_view();
+        self.history.visit(&mut self.state, screen);
         if matches!(self.state.screen, Screen::Search(_)) {
             self.search.read(cx).focus_handle(cx).focus(window);
         } else {
@@ -541,6 +555,7 @@ impl Library {
         if matches!(self.state.screen, Screen::Detail(..))
             && self
                 .history
+                .back
                 .last()
                 .is_some_and(|s| matches!(s.screen, Screen::Library(..)))
         {
@@ -550,7 +565,7 @@ impl Library {
             return;
         }
         self.return_fade = None;
-        self.finish_back(window, cx);
+        self.restore_view(NavigationDirection::Back, window, cx);
     }
 
     fn return_opacity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> f32 {
@@ -566,7 +581,7 @@ impl Library {
             LibraryReturn::Leaving(start) => {
                 let opacity = 1. - eased(start, 0.085);
                 if opacity <= 0. {
-                    self.finish_back(window, cx);
+                    self.restore_view(NavigationDirection::Back, window, cx);
                     self.return_fade = Some(LibraryReturn::Arriving(Instant::now()));
                 }
                 opacity
@@ -581,42 +596,53 @@ impl Library {
         }
     }
 
-    fn finish_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.similar_job = None;
-        self.formats.expanded = None;
-        if matches!(self.state.screen, Screen::Anime) && self.anime.selected.is_some() {
-            self.load_anime(window, cx);
+    fn restore_view(
+        &mut self,
+        direction: NavigationDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.history.can_go(direction) {
             return;
         }
-        if matches!(self.state.screen, Screen::Explore) && self.explore.selected.take().is_some() {
-            cx.notify();
-            return;
-        }
-        if let Some(previous) = self.history.pop() {
-            self.job = None;
-            self.busy = false;
-            self.message.clear();
-            self.rebind = None;
-            self.state = previous;
-            if matches!(self.state.screen, Screen::Library(..)) {
-                self.keyboard = true;
-            }
-            self.failure = None;
-            self.state.ratings_pending = false;
-            if matches!(&self.state.screen,Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
-            {
-                self.load(window, cx);
-            }
-            self.last_slide = Instant::now();
-            if let Some(index) = self.state.return_to_similar.take() {
-                self.focus_similar(index, window);
+        self.leave_view();
+        self.history.go(&mut self.state, direction);
+        self.keyboard = matches!(self.state.screen, Screen::Library(..));
+        self.state.ratings_pending = false;
+        if matches!(self.state.screen, Screen::Discover)
+            && let Some(row) = self.state.shelf
+        {
+            if let Some(shelf) = self.shelves.get(row) {
+                self.state.selection = self
+                    .state
+                    .selection
+                    .min(shelf.items.len().saturating_sub(1));
             } else {
-                self.focus.focus(window);
+                self.state.shelf = None;
+                self.state.selection = 0;
             }
-            cx.notify();
-        } else if !matches!(self.state.screen, Screen::Discover) {
-            self.navigate(Screen::Discover, window, cx);
         }
+        if let Screen::Search(term) = &self.state.screen
+            && self.search.read(cx).value().trim() != term
+        {
+            self.search
+                .update(cx, |input, cx| input.set_value(term.clone(), window, cx));
+        }
+        if std::mem::take(&mut self.state.reload_on_return)
+            || matches!(
+                self.state.screen,
+                Screen::Explore | Screen::ExploreTitle(_) | Screen::Anime | Screen::AnimeTitle(_)
+            )
+            || matches!(&self.state.screen, Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
+        {
+            self.load(window, cx);
+        }
+        if let Some(index) = self.state.return_to_similar.take() {
+            self.focus_similar(index, window);
+        } else {
+            self.focus.focus(window);
+        }
+        cx.notify();
     }
 
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -679,7 +705,9 @@ impl Library {
             Screen::Settings(SettingsPage::Display) => self.read_display(window, cx),
             Screen::Settings(_) => cx.notify(),
             Screen::Explore => self.load_explore(window, cx),
+            Screen::ExploreTitle(entry) => self.load_explore_title(*entry, window, cx),
             Screen::Anime => self.load_anime(window, cx),
+            Screen::AnimeTitle(id) => self.load_anime_title(id, window, cx),
             Screen::Live(favorites) => {
                 let servers = self.browse_servers();
                 self.work(
@@ -711,7 +739,7 @@ impl Library {
             Screen::Library(..) => cx.notify(),
             Screen::Search(query) if !query.is_empty() => {
                 let servers = self.browse_servers();
-                let people = self.people_search;
+                let people = self.state.people_search;
                 self.work(
                     window,
                     cx,
@@ -928,6 +956,7 @@ impl Library {
         self.state.selection = 0;
         self.state.page = None;
         self.state.scroll = ScrollHandle::new();
+        self.state.wheel_motion = None;
         self.load(w, cx);
     }
 
@@ -1333,7 +1362,7 @@ impl Library {
                             }
                         });
                         if !favorite && let Screen::Detail(ep, _) = &s.state.screen && ep.kind == "Episode" {
-                            for view in &mut s.history {
+                            for view in s.history.iter_mut() {
                                 if matches!(&view.screen, Screen::Detail(series, _) if Some(&series.id) == ep.series_id.as_ref()) {
                                     view.series_target = None;
                                     view.reload_series_target = true;
@@ -1411,6 +1440,7 @@ impl Library {
     }
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.wheel_motion = None;
         if self.capture_shortcut(&event.keystroke, cx) {
             return;
         }

@@ -14,7 +14,7 @@ impl Library {
                     .items_center()
                     .gap_2()
                     .when(
-                        self.history.last().is_some_and(|entry| {
+                        self.history.back.last().is_some_and(|entry| {
                             matches!(entry.screen, Screen::Settings(SettingsPage::Overview))
                         }),
                         |d| {

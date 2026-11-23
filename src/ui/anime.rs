@@ -139,7 +139,8 @@ impl Library {
             },
         );
     }
-    pub(super) fn open_anime(&mut self, entry: Media, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn load_anime_title(&mut self, id: u64, w: &mut Window, cx: &mut Context<Self>) {
+        self.anime.selected = None;
         let servers = self.browse_servers();
         let Some(client) = self.anime.client.clone() else {
             return;
@@ -148,7 +149,7 @@ impl Library {
             w,
             cx,
             move || {
-                let entry = client.media(entry.id)?;
+                let entry = client.media(id)?;
                 let mut matches = vec![];
                 for server in servers {
                     let mut names = vec![entry.title.user_preferred.as_str()];

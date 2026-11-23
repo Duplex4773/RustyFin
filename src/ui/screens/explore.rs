@@ -322,9 +322,9 @@ impl Library {
                             13.,
                             MUTED,
                         ))
-                        .on_click(
-                            cx.listener(move |s, _, w, cx| s.explore_title(item.clone(), w, cx)),
-                        ),
+                        .on_click(cx.listener(move |s, _, w, cx| {
+                            s.navigate(Screen::ExploreTitle(Box::new(item.clone())), w, cx)
+                        })),
                 );
             }
             let mut pages = div().flex().gap_2().items_center().py_2();

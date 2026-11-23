@@ -77,7 +77,7 @@ impl Library {
                 .py_3()
                 .child(
                     glyph_button("Back to AniList", BACK)
-                        .on_click(cx.listener(|s, _, w, cx| s.load_anime(w, cx))),
+                        .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                 )
                 .child(title(m.title.user_preferred.clone(), 24.));
             let mut info = Vec::new();
@@ -202,7 +202,7 @@ impl Library {
         }
         body = body.child(tabs).child(Input::new(&self.anime.search));
         for (i, m) in self.anime.rows.iter().enumerate() {
-            let selected = m.clone();
+            let id = m.id;
             body = body.child(
                 pill(
                     ("ani-title", i),
@@ -211,7 +211,9 @@ impl Library {
                     false,
                 )
                 .my_1()
-                .on_click(cx.listener(move |s, _, w, cx| s.open_anime(selected.clone(), w, cx))),
+                .on_click(
+                    cx.listener(move |s, _, w, cx| s.navigate(Screen::AnimeTitle(id), w, cx)),
+                ),
             );
         }
         let mut pages = div().py_3().flex().gap_2();
