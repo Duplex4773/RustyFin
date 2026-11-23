@@ -27,6 +27,18 @@ pub struct Art {
     tag: String,
 }
 
+impl super::Person {
+    pub fn portrait(&self, origin: Option<&str>) -> Option<Art> {
+        Some(Art {
+            origin: origin.map(str::to_owned),
+            owner: self.id.clone(),
+            kind: ArtKind::Poster,
+            max_width: 240,
+            tag: self.primary_image_tag.clone()?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ArtKind {
     Poster,
@@ -279,7 +291,37 @@ impl Default for CatalogQuery {
     }
 }
 
+impl CatalogQuery {
+    pub fn favourites() -> Self {
+        Self {
+            kind: "Movie,Series,Episode,Video,BoxSet,Audio,MusicAlbum,MusicArtist,MusicVideo",
+            favorites: true,
+            ..Default::default()
+        }
+    }
+}
+
 impl Server {
+    pub fn similar_titles(&self, id: &str) -> Result<Vec<Item>> {
+        let page: Page = read(self.get(&["Items", id, "Similar"]).query(&[
+            ("userId", self.user_id()?),
+            ("limit", "24"),
+            ("fields", "MediaSources,DateLastMediaAdded,ProviderIds"),
+        ]))?;
+        let origin = self.identity().map(|account| account.key());
+        let mut seen = HashSet::from([id.to_owned()]);
+        Ok(page
+            .items
+            .into_iter()
+            .filter(|item| {
+                matches!(item.kind.as_str(), "Movie" | "Series") && seen.insert(item.id.clone())
+            })
+            .map(|mut item| {
+                item.origin = origin.clone();
+                item
+            })
+            .collect())
+    }
     pub(super) fn user_id(&self) -> Result<&str> {
         Ok(&self
             .account

@@ -125,6 +125,8 @@ pub struct Person {
     pub id: String,
     pub name: String,
     pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_image_tag: Option<String>,
     #[serde(rename = "Type")]
     pub kind: Option<String>,
 }

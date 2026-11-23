@@ -17,6 +17,40 @@ fn choice(id: impl Into<ElementId>, text: impl Into<SharedString>, active: bool)
 }
 
 impl Library {
+    pub(super) fn edition_choices(&self, item: &Item, cx: &mut Context<Self>) -> Div {
+        let sources = item.media_sources.as_deref().unwrap_or_default();
+        let selected = item.detail_source(self.state.choice.source.as_deref());
+        let mut versions = choices();
+        for (i, source) in sources.iter().enumerate() {
+            let id = source.id.clone();
+            let active = selected.is_some_and(|s| s.id == id);
+            versions = versions.child(
+                choice(("version", i), source.name(), active)
+                    .when(
+                        self.state.detail_panel == Some(DetailPanel::Editions)
+                            && (active || (selected.is_none() && i == 0)),
+                        |b| b.track_focus(&self.detail_current_focus),
+                    )
+                    .on_click(cx.listener(move |s, _, w, cx| {
+                        s.choose(
+                            MediaChoice {
+                                source: Some(id.clone()),
+                                ..Default::default()
+                            },
+                            cx,
+                        );
+                        if s.state.detail_panel == Some(DetailPanel::Editions)
+                            && s.state.choice.source.as_ref() == Some(&id)
+                        {
+                            s.state.detail_panel = None;
+                            s.edition_focus.focus(w);
+                        }
+                    })),
+            );
+        }
+        versions
+    }
+
     pub(super) fn file_info(&self, item: &Item, cx: &mut Context<Self>) -> Div {
         let mut view = div().px_5().pb_3();
         let sources = item.media_sources.as_deref().unwrap_or_default();
@@ -24,29 +58,9 @@ impl Library {
         if sources.is_empty() {
             return view.child(label("Jellyfin supplied no file details.", 14., MUTED));
         }
-        let mut versions = choices();
-        for (i, source) in sources.iter().enumerate() {
-            let id = source.id.clone();
-            let active = selected.source.as_ref().map_or(i == 0, |s| s == &id);
-            versions = versions.child(choice(("version", i), source.name(), active).on_click(
-                cx.listener(move |s, _, _, cx| {
-                    s.choose(
-                        MediaChoice {
-                            source: Some(id.clone()),
-                            ..Default::default()
-                        },
-                        cx,
-                    );
-                }),
-            ));
-        }
-        view = view.child(section("Version").child(versions));
-        let Some(source) = sources
-            .iter()
-            .find(|s| Some(&s.id) == selected.source.as_ref())
-            .or_else(|| sources.first())
-        else {
-            return view;
+        view = view.child(section("Version").child(self.edition_choices(item, cx)));
+        let Some(source) = item.detail_source(selected.source.as_deref()) else {
+            return view.child(label("Choose an available edition.", 14., MUTED));
         };
         let mut audio = choices().child(
             choice("server-audio", "Server default", selected.audio.is_none()).on_click(
@@ -173,7 +187,10 @@ impl Library {
         }
         view
     }
-    pub(super) fn credits_extras(&self, item: &Item, cx: &mut Context<Self>) -> Div {
+    pub(super) fn credits_extras(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
+        if matches!(item.kind.as_str(), "Series" | "Movie") {
+            return self.credit_cards(item, w, cx);
+        }
         let mut view = div().px_5();
         if !self.state.extras.is_empty() {
             let mut group = choices();
@@ -205,18 +222,7 @@ impl Library {
                 };
                 group = group.child(choice(("person", i), text, false).on_click(cx.listener(
                     move |s, _, w, cx| {
-                        if let Some(server) = s.server.clone() {
-                            let id = id.clone();
-                            s.work(
-                                w,
-                                cx,
-                                move || server.item(&id),
-                                |s, p, w, cx| {
-                                    s.open_item(p, w, cx);
-                                    Ok(())
-                                },
-                            );
-                        }
+                        s.open_person(&id, w, cx);
                     },
                 )));
             }

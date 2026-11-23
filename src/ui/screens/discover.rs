@@ -5,9 +5,9 @@ const GUTTER: f32 = 32.;
 const GAP: f32 = 12.;
 
 fn marquee_size(w: &Window) -> Size<Pixels> {
-    let width = w.viewport_size().width - px(RAIL);
+    let width = w.viewport_size().width;
     // Keep Continue Watching in view on short windows, and let the banner grow on a TV.
-    let viewport = w.viewport_size().height;
+    let viewport = w.viewport_size().height - px(NAV_HEIGHT);
     let extra = ((viewport - px(720.)) * 0.25).clamp(px(0.), viewport * 0.11);
     let height = (viewport * 0.62 + extra).clamp(px(286.), (width * 0.82).max(px(286.)));
     size(width, height)
@@ -137,7 +137,7 @@ impl Library {
         }
     }
 
-    fn marquee_backdrop(&self, item: &Item, w: &Window, banner: Size<Pixels>) -> Div {
+    pub(super) fn marquee_backdrop(&self, item: &Item, w: &Window, banner: Size<Pixels>) -> Div {
         let base = div().absolute().inset_0().overflow_hidden();
         let Some(image) = self
             .artwork
@@ -445,7 +445,7 @@ impl Library {
                     ),
             );
         }
-        let available = f32::from(w.viewport_size().width) - RAIL - 2. * GUTTER;
+        let available = f32::from(w.viewport_size().width) - 2. * GUTTER;
         for (row, shelf) in self.shelves.iter().enumerate() {
             let target = if shelf.kind == ShelfKind::RecentMovies {
                 154.

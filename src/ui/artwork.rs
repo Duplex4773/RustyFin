@@ -91,11 +91,33 @@ impl Library {
                 }
             }
             Screen::Detail(item, _) => {
-                plan.extend(background(item));
+                let (layout, range, items) = self.state.similar_cards(w);
+                if matches!(item.kind.as_str(), "Movie" | "Series") {
+                    plan.extend(super::screens::marquee_art(item, w));
+                } else {
+                    plan.extend(background(item));
+                }
                 plan.extend(item.art(ArtKind::Logo));
+                if let Some(ep) = &self.state.series_target {
+                    plan.extend(ep.landscape());
+                }
                 if let Some(page) = &self.state.page {
                     plan.extend(page.items.iter().filter_map(Item::landscape));
                 }
+                if matches!(item.kind.as_str(), "Movie" | "Series") {
+                    let (cast, extras) = super::screens::credit_ranges(&self.state, item, w);
+                    plan.extend(
+                        item.people.as_deref().unwrap_or_default()[cast]
+                            .iter()
+                            .filter_map(|p| p.portrait(item.origin.as_deref())),
+                    );
+                    plan.extend(self.state.extras[extras].iter().filter_map(Item::landscape));
+                }
+                plan.extend(
+                    items[range]
+                        .iter()
+                        .filter_map(|item| item.art(layout.poster)),
+                );
             }
             Screen::Library(..) => {
                 let poster =

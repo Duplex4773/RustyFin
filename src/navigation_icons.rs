@@ -16,6 +16,12 @@ macro_rules! glyph {
 
 const ICONS: &[(&str, &str)] = &[
     (
+        "nav/heart",
+        glyph!(
+            r#"<path d="M12 21 3.2 12.5C-2.3 6.9 5.6-.7 11 5l1 1.1L13 5c5.4-5.7 13.3 1.9 7.8 7.5z"/>"#
+        ),
+    ),
+    (
         "nav/home",
         glyph!(
             r#"<path d="M2 10.3 10.8 3a1.9 1.9 0 0 1 2.4 0l8.8 7.3v9.4a2 2 0 0 1-2 2h-5.4v-7.2H9.4v7.2H4a2 2 0 0 1-2-2z"/>"#

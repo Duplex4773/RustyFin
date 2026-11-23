@@ -65,6 +65,25 @@ impl Screen {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DetailPanel {
+    More,
+    Editions,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SeriesFocus {
+    Hero,
+    Seasons,
+    Episodes,
+}
+
+#[derive(Clone, Copy)]
+enum LibraryReturn {
+    Leaving(Instant),
+    Arriving(Instant),
+}
+
 struct ViewState {
     screen: Screen,
     page: Option<Page>,
@@ -75,6 +94,15 @@ struct ViewState {
     timers: Vec<crate::jellyfin::live::Timer>,
     choice: MediaChoice,
     info_open: bool,
+    detail_panel: Option<DetailPanel>,
+    series_focus: SeriesFocus,
+    season_scroll: ScrollHandle,
+    cast_start: usize,
+    extra_start: usize,
+    similar: Option<Result<Vec<Item>, String>>,
+    similar_start: usize,
+    similar_focus: Vec<FocusHandle>,
+    return_to_similar: Option<usize>,
     editor: Option<editor::Editor>,
     subtitle_search: Option<editor::SubtitleSearch>,
     ratings: Option<std::result::Result<Vec<crate::services::Rating>, String>>,
@@ -98,6 +126,15 @@ impl ViewState {
             timers: vec![],
             choice: Default::default(),
             info_open: false,
+            detail_panel: None,
+            series_focus: SeriesFocus::Hero,
+            season_scroll: ScrollHandle::new(),
+            cast_start: 0,
+            extra_start: 0,
+            similar: None,
+            similar_start: 0,
+            similar_focus: Vec::new(),
+            return_to_similar: None,
             editor: None,
             subtitle_search: None,
             ratings: None,
@@ -115,6 +152,10 @@ pub struct Library {
     address: Entity<InputState>,
     search: Entity<InputState>,
     focus: FocusHandle,
+    more_focus: FocusHandle,
+    edition_focus: FocusHandle,
+    detail_panel_focus: FocusHandle,
+    detail_current_focus: FocusHandle,
     server: Option<Server>,
     code: Option<String>,
     nearby: Vec<crate::jellyfin::discovery::Nearby>,
@@ -127,9 +168,11 @@ pub struct Library {
     search_delay: Option<Task<()>>,
     state: ViewState,
     history: Vec<ViewState>,
+    return_fade: Option<LibraryReturn>,
     shelves: Vec<Shelf>,
     libraries: Vec<Item>,
     library_list_job: Option<Task<()>>,
+    similar_job: Option<Task<()>>,
     featured: Vec<Item>,
     hero: usize,
     rotate: bool,
@@ -137,10 +180,8 @@ pub struct Library {
     last_slide: Instant,
     artwork: Artwork,
     formats: formats::CardFormats,
-    rail: screens::RailMotion,
-    rail_focus: FocusHandle,
+    navigation_focus: FocusHandle,
     menu_focus: playback::MenuFocus,
-    libraries_collapsed: bool,
     filters_open: bool,
     people_search: bool,
     controls: Controls,
@@ -214,6 +255,10 @@ impl Library {
             });
         let mut view = Self {
             focus: cx.focus_handle(),
+            more_focus: cx.focus_handle(),
+            edition_focus: cx.focus_handle(),
+            detail_panel_focus: cx.focus_handle(),
+            detail_current_focus: cx.focus_handle(),
             address,
             search,
             server,
@@ -228,9 +273,11 @@ impl Library {
             search_delay: None,
             state: ViewState::new(Screen::Discover),
             history: vec![],
+            return_fade: None,
             shelves: vec![],
             libraries: vec![],
             library_list_job: None,
+            similar_job: None,
             featured: vec![],
             hero: 0,
             rotate: true,
@@ -238,10 +285,8 @@ impl Library {
             last_slide: Instant::now(),
             artwork: Artwork::default(),
             formats: Default::default(),
-            rail: Default::default(),
-            rail_focus: cx.focus_handle(),
+            navigation_focus: cx.focus_handle(),
             menu_focus: playback::MenuFocus::new(cx),
-            libraries_collapsed: false,
             filters_open: false,
             people_search: false,
             controls: Default::default(),
@@ -400,6 +445,8 @@ impl Library {
     }
 
     fn clear_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.similar_job = None;
+        self.return_fade = None;
         self.stop();
         self.failure = None;
         self.rebind = None;
@@ -450,6 +497,8 @@ impl Library {
     }
 
     fn navigate(&mut self, screen: Screen, window: &mut Window, cx: &mut Context<Self>) {
+        self.similar_job = None;
+        self.return_fade = None;
         self.formats.expanded = None;
         self.search_delay = None;
         self.job = None;
@@ -481,6 +530,56 @@ impl Library {
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.state.detail_panel.take() {
+            self.detail_launcher(panel).focus(window);
+            cx.notify();
+            return;
+        }
+        if matches!(self.state.screen, Screen::Detail(..))
+            && self
+                .history
+                .last()
+                .is_some_and(|s| matches!(s.screen, Screen::Library(..)))
+        {
+            self.return_fade
+                .get_or_insert_with(|| LibraryReturn::Leaving(Instant::now()));
+            cx.notify();
+            return;
+        }
+        self.return_fade = None;
+        self.finish_back(window, cx);
+    }
+
+    fn return_opacity(&mut self, window: &mut Window, cx: &mut Context<Self>) -> f32 {
+        let Some(transition) = self.return_fade else {
+            return 1.;
+        };
+        let eased = |start: Instant, seconds: f32| {
+            let t = (start.elapsed().as_secs_f32() / seconds).min(1.);
+            t * t * (3. - 2. * t)
+        };
+        window.request_animation_frame();
+        match transition {
+            LibraryReturn::Leaving(start) => {
+                let opacity = 1. - eased(start, 0.085);
+                if opacity <= 0. {
+                    self.finish_back(window, cx);
+                    self.return_fade = Some(LibraryReturn::Arriving(Instant::now()));
+                }
+                opacity
+            }
+            LibraryReturn::Arriving(start) => {
+                let opacity = eased(start, 0.12);
+                if opacity >= 1. {
+                    self.return_fade = None;
+                }
+                opacity
+            }
+        }
+    }
+
+    fn finish_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.similar_job = None;
         self.formats.expanded = None;
         if matches!(self.state.screen, Screen::Anime) && self.anime.selected.is_some() {
             self.load_anime(window, cx);
@@ -506,7 +605,11 @@ impl Library {
                 self.load(window, cx);
             }
             self.last_slide = Instant::now();
-            self.focus.focus(window);
+            if let Some(index) = self.state.return_to_similar.take() {
+                self.focus_similar(index, window);
+            } else {
+                self.focus.focus(window);
+            }
             cx.notify();
         } else if !matches!(self.state.screen, Screen::Discover) {
             self.navigate(Screen::Discover, window, cx);
@@ -517,7 +620,7 @@ impl Library {
         let Some(server) = self.server.clone() else {
             return;
         };
-        // Navigation can cancel the foreground page request while the drawer still needs its links.
+        // The top bar still needs library shortcuts when navigation cancels the page request.
         if self.library_list_job.is_none() {
             let source = server.clone();
             let worker = cx
@@ -716,11 +819,22 @@ impl Library {
                                 .or_else(|| episodes.iter().find(|ep| ep.playable()))
                                 .cloned();
                         }
-                        Ok((page, seasons, season, item, target, start))
+                        let extras =
+                            (series && hydrate).then(|| server.extras(&item).unwrap_or_default());
+                        Ok((page, seasons, season, item, target, start, extras))
                     },
-                    move |s, (page, seasons, season, item, target, start), w, cx| {
+                    move |s, (page, seasons, season, item, target, start, extras), w, cx| {
+                        if let Some(extras) = extras {
+                            s.state.extras = extras;
+                        }
                         s.state.screen = Screen::Detail(item, season);
                         s.state.seasons = seasons;
+                        if let Screen::Detail(_, Some(id)) = &s.state.screen
+                            && let Some(index) =
+                                s.state.seasons.iter().position(|part| &part.id == id)
+                        {
+                            s.state.season_scroll.scroll_to_item(index);
+                        }
                         if hydrate {
                             s.state.selection = target
                                 .as_ref()
@@ -776,6 +890,8 @@ impl Library {
     }
 
     fn refresh(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        self.similar_job = None;
+        self.state.similar = None;
         if matches!(self.state.screen, Screen::Library(..)) {
             self.state.wall.invalidate();
         }
@@ -863,6 +979,16 @@ impl Library {
         }
     }
     fn open_item(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        self.state.return_to_similar = self
+            .state
+            .similar
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|titles| {
+                titles
+                    .iter()
+                    .position(|i| i.id == item.id && i.origin == item.origin)
+            });
         if matches!(self.state.screen, Screen::Library(..))
             && let Some(index) = self.state.wall.index_of(&item.id)
         {
@@ -1346,18 +1472,23 @@ impl Library {
     fn regular_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         if key == "tab" {
-            let was_in_rail = self.rail_focus.contains_focused(window, cx);
             if event.keystroke.modifiers.shift {
                 window.focus_prev();
             } else {
                 window.focus_next();
             }
-            let in_rail = self.rail_focus.contains_focused(window, cx);
-            if in_rail != was_in_rail {
-                self.rail.set_expanded(in_rail);
-                cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        if self.navigation_focus.contains_focused(window, cx) {
+            match key {
+                "left" => window.focus_prev(),
+                "right" => window.focus_next(),
+                "down" | "escape" => self.focus.focus(window),
+                _ => return,
             }
             cx.stop_propagation();
+            cx.notify();
             return;
         }
         // Focused GPUI buttons dispatch their own keyboard click on key-up.
@@ -1437,10 +1568,20 @@ impl Library {
             }
             let count = self.state.page.as_ref().map_or(0, |p| p.items.len());
             let selected = self.state.selection;
+            if self.detail_action_key(key, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if matches!(key, "up" | "down" | "left" | "right") {
                 self.focus.focus(window);
             }
             self.keyboard = true;
+            if self.series_key(key, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if matches!(self.state.screen, Screen::Library(..)) && self.catalog_key(key, window, cx)
             {
                 cx.stop_propagation();

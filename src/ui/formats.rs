@@ -86,7 +86,16 @@ impl Library {
                         .take((end - first) * columns),
                 )
             }
-            Screen::Detail(..) => Box::new(self.state.page.iter().flat_map(|p| &p.items)),
+            Screen::Detail(..) => {
+                let (_, range, items) = self.state.similar_cards(w);
+                Box::new(
+                    self.state
+                        .page
+                        .iter()
+                        .flat_map(|p| &p.items)
+                        .chain(&items[range]),
+                )
+            }
             _ => return,
         };
         let mut requests = Vec::new();

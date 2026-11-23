@@ -1,5 +1,9 @@
 mod anime;
 mod catalog;
+mod credits;
+pub(super) use credits::credit_ranges;
+mod detail;
+use detail::detail_tool;
 mod discover;
 pub(super) use discover::{featured_titles, marquee_art};
 mod editor;
@@ -11,6 +15,7 @@ mod music;
 mod navigation;
 mod options;
 mod settings;
+mod similar;
 pub(super) use settings::SettingsPage;
 mod player_chrome;
 pub(super) use player_chrome::PREVIEW_WIDTH;
@@ -25,34 +30,7 @@ const SURFACE: u32 = 0x15171c;
 const ACTIVE: u32 = 0x2d2f35;
 const TEXT: u32 = 0xededed;
 const MUTED: u32 = 0xa0a1a6;
-const RAIL: f32 = 72.;
-const WIDE_RAIL: f32 = 220.;
-const RAIL_DURATION: Duration = Duration::from_millis(180);
-
-#[derive(Default)]
-pub(super) struct RailMotion {
-    expanded: bool,
-    from: f32,
-    changed_at: Option<Instant>,
-}
-
-impl RailMotion {
-    fn phase(&self, now: Instant) -> f32 {
-        let elapsed = self.changed_at.map_or(0., |start| {
-            now.duration_since(start).as_secs_f32() / RAIL_DURATION.as_secs_f32()
-        });
-        (self.from + if self.expanded { elapsed } else { -elapsed }).clamp(0., 1.)
-    }
-
-    pub(super) fn set_expanded(&mut self, expanded: bool) {
-        if self.expanded != expanded {
-            let now = Instant::now();
-            self.from = self.phase(now);
-            self.changed_at = Some(now);
-            self.expanded = expanded;
-        }
-    }
-}
+const NAV_HEIGHT: f32 = 48.;
 const PAD: f32 = 16.;
 const LIME: u32 = 0xdafe67;
 
@@ -140,7 +118,7 @@ fn pill(
         .when_some(code, |d, code| d.child(icon(code, 13.)))
         .child(text.into())
 }
-fn episode_action(item: &Item) -> String {
+fn episode_play_label(item: &Item) -> String {
     let action = if item.position() > 0 {
         "Resume"
     } else if item.user_data.as_ref().and_then(|d| d.played) == Some(true) {
@@ -148,10 +126,13 @@ fn episode_action(item: &Item) -> String {
     } else {
         "Play"
     };
-    let label = match (item.parent_index_number, item.index_number) {
+    match (item.parent_index_number, item.index_number) {
         (Some(s), Some(e)) => format!("{action} S{s} E{e}"),
         _ => format!("{action} {}", item.name),
-    };
+    }
+}
+fn episode_action(item: &Item) -> String {
+    let label = episode_play_label(item);
     if item.position() > 0
         && let Some(duration) = item.run_time_ticks.filter(|t| *t > item.position())
     {
@@ -189,10 +170,14 @@ pub(super) struct CatalogGrid {
 
 impl CatalogGrid {
     fn new(viewport_width: f32, scale: f32) -> Self {
-        let available = (viewport_width - RAIL - 2. * PAD).max(1.);
+        Self::fit(viewport_width - 2. * PAD, scale, 15)
+    }
+
+    fn fit(available: f32, scale: f32, max_columns: usize) -> Self {
+        let available = available.max(1.);
         let columns = ((available + CATALOG_GAP) / (192. + CATALOG_GAP))
             .round()
-            .clamp(1., 15.) as usize;
+            .clamp(1., max_columns as f32) as usize;
         let card_width =
             ((available - CATALOG_GAP * (columns - 1) as f32) / columns as f32).floor();
         Self {
@@ -610,14 +595,19 @@ impl Library {
         }
         let mut tool = div().flex().items_center().gap_2().flex_wrap();
         if matches!(tab, Tab::Browse | Tab::Recommended) {
-            for (kind, name) in [
-                ("Movie", "Movies"),
-                ("Series", "TV Shows"),
-                ("Episode", "Episodes"),
-                ("MusicAlbum", "Albums"),
-                ("MusicArtist", "Artists"),
-                ("Audio", "Songs"),
-            ] {
+            let all = CatalogQuery::favourites().kind;
+            for (kind, name) in (q.favorites || q.kind == all)
+                .then_some((all, "All"))
+                .into_iter()
+                .chain([
+                    ("Movie", "Movies"),
+                    ("Series", "TV Shows"),
+                    ("Episode", "Episodes"),
+                    ("MusicAlbum", "Albums"),
+                    ("MusicArtist", "Artists"),
+                    ("Audio", "Songs"),
+                ])
+            {
                 tool = tool.child(
                     pill(name, name, None, q.kind == kind)
                         .h(px(28.))
@@ -821,7 +811,7 @@ impl Library {
             ))
     }
 
-    fn detail(&self, item: &Item, season: Option<&str>, w: &Window, cx: &mut Context<Self>) -> Div {
+    fn basic_detail_header(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
         let height = (f32::from(w.viewport_size().height) * 0.62).clamp(265., 560.);
         let mut details = div()
             .absolute()
@@ -864,17 +854,13 @@ impl Library {
         let mut actions = div().flex().flex_wrap().items_center().gap_2();
         if item.playable() {
             actions = actions.child(self.play_button(item, cx));
-        } else if let Some(episode) = if item.kind == "Series" {
-            self.state.series_target.as_ref()
-        } else {
-            self.state.page.as_ref().and_then(|p| {
-                p.items
-                    .iter()
-                    .filter(|i| i.playable())
-                    .find(|i| i.user_data.as_ref().and_then(|d| d.played) != Some(true))
-                    .or_else(|| p.items.iter().find(|i| i.playable()))
-            })
-        } {
+        } else if let Some(episode) = self.state.page.as_ref().and_then(|p| {
+            p.items
+                .iter()
+                .filter(|i| i.playable())
+                .find(|i| i.user_data.as_ref().and_then(|d| d.played) != Some(true))
+                .or_else(|| p.items.iter().find(|i| i.playable()))
+        }) {
             let episode = episode.clone();
             let text = episode_action(&episode);
             actions = actions.child(
@@ -883,10 +869,31 @@ impl Library {
                     .on_click(cx.listener(move |s, _, w, cx| s.play_item(episode.clone(), w, cx))),
             );
         }
+        details = details.child(self.secondary_actions(item, actions, cx));
+        div().child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(height))
+                .overflow_hidden()
+                .child(self.backdrop(item))
+                .child(details)
+                .child(
+                    div().absolute().left(px(16.)).top(px(12.)).child(
+                        glyph_button("Back", BACK)
+                            .bg(rgba(0x11121699))
+                            .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
+                    ),
+                ),
+        )
+    }
+
+    fn secondary_actions(&self, item: &Item, mut actions: Div, cx: &mut Context<Self>) -> Div {
         if item.playable() {
             let watched = item.user_data.as_ref().and_then(|u| u.played) == Some(true);
             actions = actions.child(
-                glyph_button(
+                detail_tool(
+                    item,
                     if watched {
                         "Mark unwatched"
                     } else {
@@ -901,7 +908,8 @@ impl Library {
         }
         let favorite = item.user_data.as_ref().and_then(|u| u.is_favorite) == Some(true);
         actions = actions.child(
-            glyph_button(
+            detail_tool(
+                item,
                 if favorite {
                     "Remove from favorites"
                 } else {
@@ -915,14 +923,19 @@ impl Library {
                 rgba(0x15171ccb)
             })
             .text_color(rgb(if favorite { BG } else { TEXT }))
+            .when(self.state.detail_panel == Some(DetailPanel::More), |b| {
+                b.track_focus(&self.detail_current_focus)
+            })
             .on_click(cx.listener(|s, _, w, cx| s.toggle_flag(true, w, cx))),
         );
         if item.playable() {
             actions = actions.child(
-                glyph_button("Tracks and file info", "\u{e946}")
+                detail_tool(item, "Tracks and file info", "\u{e946}")
                     .bg(rgb(SURFACE))
-                    .on_click(cx.listener(|s, _, _, cx| {
+                    .on_click(cx.listener(|s, _, w, cx| {
                         s.state.info_open = !s.state.info_open;
+                        s.state.detail_panel = None;
+                        s.focus.focus(w);
                         cx.notify();
                     })),
             );
@@ -955,7 +968,7 @@ impl Library {
         }
         if item.playable() && item.can_download != Some(false) {
             let target = item.clone();
-            actions = actions.child(glyph_button("Download original", "\u{e896}").on_click(
+            actions = actions.child(detail_tool(item, "Download original", "\u{e896}").on_click(
                 cx.listener(move |s, _, w, cx| s.enqueue_download(target.clone(), w, cx)),
             ));
         }
@@ -987,34 +1000,31 @@ impl Library {
         ) {
             let edit = item.clone();
             actions = actions.child(
-                glyph_button("Edit metadata and artwork", "\u{e70f}")
-                    .on_click(cx.listener(move |s, _, w, cx| s.open_editor(edit.clone(), w, cx))),
+                detail_tool(item, "Edit metadata and artwork", "\u{e70f}").on_click(cx.listener(
+                    move |s, _, w, cx| {
+                        s.state.detail_panel = None;
+                        s.open_editor(edit.clone(), w, cx);
+                    },
+                )),
             );
         }
-        details = details.child(actions);
-        let mut head = div().child(
-            div()
-                .relative()
-                .w_full()
-                .h(px(height))
-                .overflow_hidden()
-                .child(self.backdrop(item))
-                .child(details)
-                .child(
-                    div().absolute().left(px(16.)).top(px(12.)).child(
-                        glyph_button("Back", BACK)
-                            .bg(rgba(0x11121699))
-                            .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
-                    ),
-                ),
-        );
+        actions
+    }
+
+    fn detail(&self, item: &Item, season: Option<&str>, w: &Window, cx: &mut Context<Self>) -> Div {
+        let cinematic = matches!(item.kind.as_str(), "Series" | "Movie");
+        let mut head = if cinematic {
+            self.cinematic_header(item, w, cx)
+        } else {
+            self.basic_detail_header(item, w, cx)
+        };
         if self.state.editor.is_some() {
             head = head.child(self.edit_form(cx));
         }
         if self.state.info_open {
             head = head.child(self.file_info(item, cx));
         }
-        if let Some(text) = item.overview.as_ref().filter(|t| !t.is_empty()) {
+        if !cinematic && let Some(text) = item.overview.as_ref().filter(|t| !t.is_empty()) {
             head = head.child(
                 div()
                     .px_5()
@@ -1024,7 +1034,7 @@ impl Library {
                     .child(label(text.clone(), 15., TEXT).mt_2().line_height(px(23.))),
             );
         }
-        if let Some(genres) = item.genres.as_ref().filter(|g| !g.is_empty()) {
+        if !cinematic && let Some(genres) = item.genres.as_ref().filter(|g| !g.is_empty()) {
             head = head.child(label(genres.join("  ·  "), 13., MUTED).px_5().pb_4());
         }
         let mut supplements = div();
@@ -1077,29 +1087,45 @@ impl Library {
                             .unwrap_or_default();
                         group = group.child(label(format!("{}  {value}", score.source), 14., TEXT));
                     }
-                    head = head.child(group);
+                    if item.kind == "Series" {
+                        supplements = supplements.child(group);
+                    } else {
+                        head = head.child(group);
+                    }
                 }
-                Err(e) => head = head.child(label(format!("MDBList · {e}"), 13., MUTED).px_5()),
+                Err(e) => {
+                    let message = label(format!("MDBList · {e}"), 13., MUTED).px_5();
+                    if item.kind == "Series" {
+                        supplements = supplements.child(message);
+                    } else {
+                        head = head.child(message);
+                    }
+                }
                 _ => {}
             }
         }
         if item.kind == "Series" {
-            supplements = supplements.child(self.credits_extras(item, cx));
+            supplements = supplements.child(self.credits_extras(item, w, cx));
         } else {
-            head = head.child(self.credits_extras(item, cx));
+            head = head.child(self.credits_extras(item, w, cx));
         }
         if !item.playable() {
-            let mut section = div().px_5().py_2().child(title(
-                if item.kind == "Series" {
-                    "Episodes"
-                } else {
-                    "Titles"
-                },
-                21.,
-            ));
+            let mut section = div()
+                .px_5()
+                .when(cinematic, |d| d.px(px(detail::detail_inset(w))))
+                .py_2()
+                .child(title(
+                    if item.kind == "Series" {
+                        "Episodes"
+                    } else {
+                        "Titles"
+                    },
+                    21.,
+                ));
             if !self.state.seasons.is_empty() {
                 let mut seasons = div()
                     .id("seasons")
+                    .track_scroll(&self.state.season_scroll)
                     .w_full()
                     .overflow_x_scroll()
                     .flex()
@@ -1108,17 +1134,18 @@ impl Library {
                 for (i, part) in self.state.seasons.iter().enumerate() {
                     let id = part.id.clone();
                     seasons = seasons.child(
-                        pill(("season", i), part.name.clone(), None, season == Some(&id)).on_click(
-                            cx.listener(move |s, _, w, cx| {
-                                if let Screen::Detail(_, season) = &mut s.state.screen {
-                                    *season = Some(id.clone());
-                                }
-                                s.state.offset = 0;
-                                s.state.selection = 0;
-                                s.state.page = None;
-                                s.load(w, cx);
-                            }),
-                        ),
+                        pill(("season", i), part.name.clone(), None, season == Some(&id))
+                            .when(
+                                self.keyboard
+                                    && self.state.series_focus == SeriesFocus::Seasons
+                                    && season == Some(&id),
+                                |d| d.border_2().border_color(rgb(LIME)),
+                            )
+                            .on_click(cx.listener(move |s, _, w, cx| {
+                                s.state.series_focus = SeriesFocus::Hero;
+                                s.focus.focus(w);
+                                s.select_season(&id, w, cx);
+                            })),
                     );
                 }
                 section = section.child(seasons);
@@ -1156,6 +1183,7 @@ impl Library {
                     div()
                         .id(("episode", i))
                         .mx_4()
+                        .when(cinematic, |d| d.mx(px(detail::detail_inset(w) - 8.)))
                         .px_2()
                         .py_2()
                         .rounded_md()
@@ -1163,9 +1191,13 @@ impl Library {
                         .flex()
                         .items_center()
                         .gap_4()
-                        .when(self.keyboard && i == self.state.selection, |d| {
-                            d.bg(rgb(ACTIVE))
-                        })
+                        .when(
+                            self.keyboard
+                                && i == self.state.selection
+                                && (item.kind != "Series"
+                                    || self.state.series_focus == SeriesFocus::Episodes),
+                            |d| d.bg(rgb(ACTIVE)),
+                        )
                         .hover(|d| d.bg(rgb(SURFACE)))
                         .child(thumbnail)
                         .child(
@@ -1225,6 +1257,7 @@ impl Library {
         if item.kind == "Series" {
             body = body.child(supplements);
         }
+        body = body.when_some(self.similar_section(w, cx), |d, row| d.child(row));
         div().size_full().min_h_0().child(body)
     }
 
@@ -1338,6 +1371,7 @@ impl Library {
 
 impl Render for Library {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let return_opacity = self.return_opacity(w, cx);
         let root = div()
             .size_full()
             .flex()
@@ -1356,7 +1390,6 @@ impl Render for Library {
         if let Some(p) = &self.player
             && !self.controls.mini
         {
-            self.rail = Default::default();
             return self.playback_screen(root, p, w, cx);
         }
         if self.state.reload_series_target && !self.busy && self.message.is_empty() {
@@ -1374,14 +1407,12 @@ impl Render for Library {
         self.load_card_formats(w, cx);
         self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
+        self.load_similar(w, cx);
         let content = if self.server.is_none() {
-            self.rail = Default::default();
             self.connection(cx)
-        } else if let Screen::Detail(item, season) = &self.state.screen {
-            self.rail = Default::default();
-            self.detail(item, season.as_deref(), w, cx)
         } else {
-            let body = match &self.state.screen {
+            match &self.state.screen {
+                Screen::Detail(item, season) => self.detail(item, season.as_deref(), w, cx),
                 Screen::Discover => self.discover(w, cx),
                 Screen::Library(tab, q) => self.browse(*tab, q, w, cx),
                 Screen::Search(term) => self.search_view(term, w, cx),
@@ -1391,62 +1422,64 @@ impl Render for Library {
                 Screen::Anime => self.anime_view(cx),
                 Screen::Copies { item, play } => self.copy_picker(item, *play, cx),
                 Screen::Downloads => self.download_view(cx),
-                Screen::Detail(..) => unreachable!(),
-            };
-            div()
-                .relative()
-                .size_full()
-                .flex()
-                .pl(px(RAIL))
-                .child(body)
-                .child(self.rail(w, cx))
+            }
         };
-        root.child(div().flex_1().min_h_0().flex().child(content))
-            .when_some(self.player.as_ref().filter(|p| p.audio_only), |r, p| {
-                r.child(self.mini_player(p, cx))
-            })
-            .when(!self.message.is_empty(), |d| {
-                d.child(
-                    div()
-                        .bg(rgb(0x30292c))
-                        .px_4()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(label(self.message.clone(), 14., 0xffdfdb).flex_1())
-                        .when(self.failure.as_ref().is_some_and(|f| f.dolby), |d| {
-                            d.child(
-                                pill(
-                                    "hdr-settings-error",
-                                    "Windows display settings",
-                                    None,
-                                    false,
-                                )
-                                .on_click(|_, _, cx| cx.open_url("ms-settings:display")),
+        root.when(self.server.is_some(), |d| {
+            d.child(self.top_navigation(w, cx))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .opacity(return_opacity)
+                .child(content),
+        )
+        .when_some(self.player.as_ref().filter(|p| p.audio_only), |r, p| {
+            r.child(self.mini_player(p, cx))
+        })
+        .when(!self.message.is_empty(), |d| {
+            d.child(
+                div()
+                    .bg(rgb(0x30292c))
+                    .px_4()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(label(self.message.clone(), 14., 0xffdfdb).flex_1())
+                    .when(self.failure.as_ref().is_some_and(|f| f.dolby), |d| {
+                        d.child(
+                            pill(
+                                "hdr-settings-error",
+                                "Windows display settings",
+                                None,
+                                false,
                             )
-                        })
-                        .when(self.server.is_some(), |d| {
-                            d.child(
-                                glyph_button("Retry", REFRESH)
-                                    .on_click(cx.listener(|s, _, w, cx| s.retry_playback(w, cx))),
-                            )
-                        })
-                        .child(glyph_button("Dismiss", "\u{e711}").on_click(cx.listener(
-                            |s, _, _, cx| {
-                                s.message.clear();
-                                s.failure = None;
-                                cx.notify();
-                            },
-                        ))),
-                )
-            })
+                            .on_click(|_, _, cx| cx.open_url("ms-settings:display")),
+                        )
+                    })
+                    .when(self.server.is_some(), |d| {
+                        d.child(
+                            glyph_button("Retry", REFRESH)
+                                .on_click(cx.listener(|s, _, w, cx| s.retry_playback(w, cx))),
+                        )
+                    })
+                    .child(glyph_button("Dismiss", "\u{e711}").on_click(cx.listener(
+                        |s, _, _, cx| {
+                            s.message.clear();
+                            s.failure = None;
+                            cx.notify();
+                        },
+                    ))),
+            )
+        })
     }
 }
 
 #[cfg(test)]
 mod catalog_grid_tests {
-    use super::{ArtKind, CATALOG_GAP, CatalogGrid, PAD, RAIL};
+    use super::{ArtKind, CATALOG_GAP, CatalogGrid, PAD};
 
     #[test]
     fn posters_fill_each_row_at_windowed_and_4k_sizes() {
@@ -1455,13 +1488,13 @@ mod catalog_grid_tests {
             (1080., 1., 5, ArtKind::Poster),
             (3840. / 1.25, 1.25, 15, ArtKind::Poster),
             (3840., 1., 15, ArtKind::Poster),
-            (1920., 2., 9, ArtKind::LargePoster),
+            (1920., 2., 10, ArtKind::LargePoster),
         ] {
             let grid = CatalogGrid::new(width, scale);
             assert_eq!(grid.columns, columns);
             assert_eq!(grid.poster, art);
             let used = grid.card_width * columns as f32 + CATALOG_GAP * (columns - 1) as f32;
-            let remaining = width - RAIL - 2. * PAD - used;
+            let remaining = width - 2. * PAD - used;
             assert!((0. ..columns as f32).contains(&remaining));
         }
     }

@@ -1,285 +1,277 @@
 use super::*;
+use gpui_component::{
+    Selectable,
+    button::{Button, ButtonVariants},
+    menu::{DropdownMenu, PopupMenuItem},
+};
 
-const ROW: f32 = 48.;
-const LIBRARY_ROW: f32 = 36.;
-const GAP: f32 = 4.;
-const HOVER: u32 = 0x212227;
-
-fn row(
-    id: impl Into<ElementId>,
+#[derive(Clone)]
+struct Link {
     name: SharedString,
     glyph: &'static str,
-    selected: bool,
-    child: bool,
-    progress: f32,
-) -> Stateful<Div> {
-    let glyph_size = if child { 19. } else { 23. };
-    div()
-        .id(id)
-        .group("navigation-row")
-        .w_full()
-        .h(px(if child { LIBRARY_ROW } else { ROW }))
-        .flex_none()
-        .flex()
-        .items_center()
-        .pl(px(16.))
-        .pr(px(8.))
-        .gap(px(10.))
-        .rounded_full()
-        .overflow_hidden()
-        .cursor_pointer()
-        .focusable()
-        .tab_stop(true)
-        .text_color(rgb(if selected { TEXT } else { MUTED }))
-        .when(selected, |d| {
-            d.bg(rgb(ACTIVE)).font_weight(FontWeight::SEMIBOLD)
-        })
-        .hover(move |d| {
-            d.bg(rgb(if selected { ACTIVE } else { HOVER }))
-                .text_color(rgb(TEXT))
-        })
-        .focus(|d| d.border_1().border_color(rgb(MUTED)))
-        .child(
-            div()
-                .w(px(if child { 20. } else { 24. }))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    svg()
-                        .path(glyph)
-                        .size(px(glyph_size))
-                        .text_color(rgb(if selected { TEXT } else { MUTED }))
-                        .group_hover("navigation-row", |d| d.text_color(rgb(TEXT))),
-                ),
-        )
-        .when(progress > 0., |d| {
-            d.child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .opacity(progress)
-                    .text_size(px(if child { 13. } else { 14. }))
-                    .child(name.clone()),
+    screen: Screen,
+    active: bool,
+}
+
+impl Link {
+    fn new(
+        name: impl Into<SharedString>,
+        glyph: &'static str,
+        screen: Screen,
+        active: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            glyph,
+            screen,
+            active,
+        }
+    }
+
+    fn button(
+        &self,
+        id: ElementId,
+        width: f32,
+        show_name: bool,
+        cx: &Context<Library>,
+    ) -> Stateful<Div> {
+        let home = matches!(self.screen, Screen::Discover);
+        let target = self.screen.clone();
+        let button = div()
+            .id(id)
+            .focusable()
+            .tab_stop(true)
+            .flex_none()
+            .w(px(width))
+            .h(px(34.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(7.))
+            .px(px(6.))
+            .rounded_md()
+            .cursor_pointer()
+            .text_color(rgb(if self.active || home { TEXT } else { 0xb8bcc4 }))
+            .when(self.active, |d| d.bg(rgb(0x30372b)).text_color(rgb(LIME)))
+            .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(TEXT)))
+            .focus(|d| d.border_1().border_color(rgb(LIME)))
+            .child(
+                svg()
+                    .path(self.glyph)
+                    .size(px(if home { 21. } else { 17. }))
+                    .flex_none()
+                    .text_color(rgb(if home || self.active { LIME } else { 0xb8bcc4 })),
             )
-        })
-        .when(progress == 0., |d| {
-            d.tooltip(move |w, cx| Tooltip::new(name.clone()).build(w, cx))
-        })
+            .when(show_name, |d| {
+                d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(if home { 16. } else { 13. }))
+                        .font_weight(if home {
+                            FontWeight::BOLD
+                        } else {
+                            FontWeight::SEMIBOLD
+                        })
+                        .child(self.name.clone()),
+                )
+            });
+        tip(
+            button,
+            if home {
+                "Home".to_owned()
+            } else {
+                self.name.to_string()
+            },
+        )
+        .on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
+    }
 }
 
 impl Library {
-    pub(super) fn rail(&self, w: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
-        let phase = self.rail.phase(Instant::now());
-        if phase != f32::from(self.rail.expanded) {
-            w.request_animation_frame();
-        }
-        let progress = phase * phase * (3. - 2. * phase);
-        let scope = match &self.state.screen {
-            Screen::Library(_, q) => q.library.as_deref(),
+    pub(super) fn top_navigation(&self, w: &Window, cx: &mut Context<Self>) -> Div {
+        let width = f32::from(w.viewport_size().width);
+        let screen = &self.state.screen;
+        // Keep the originating library highlighted as users drill into titles and their cast.
+        let section = if matches!(screen, Screen::Detail(..) | Screen::Copies { .. }) {
+            self.history
+                .iter()
+                .rev()
+                .map(|v| &v.screen)
+                .find(|s| !matches!(s, Screen::Detail(..) | Screen::Copies { .. }))
+                .unwrap_or(screen)
+        } else {
+            screen
+        };
+        let library = match section {
+            Screen::Library(tab, q) => Some((*tab, q)),
             _ => None,
         };
-        // Collections and playlists already have dedicated tabs in the library browser.
-        let shortcuts: Vec<_> = self
-            .libraries
-            .iter()
-            .filter(|library| {
-                !matches!(
-                    library.collection_type.as_deref(),
-                    Some("boxsets" | "playlists")
-                )
-            })
-            .collect();
-        let show_children = progress > 0. && !self.libraries_collapsed && !shortcuts.is_empty();
-        let screen = &self.state.screen;
-        let destination =
-            |name: &'static str, glyph, active, target: Screen, cx: &Context<Self>| {
-                row(glyph, name.into(), glyph, active, false, progress)
-                    .on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
+        let home = Link::new(
+            "RustyFin",
+            "nav/home",
+            Screen::Discover,
+            matches!(section, Screen::Discover),
+        );
+        let mut tabs = vec![
+            Link::new(
+                "Favourites",
+                "nav/heart",
+                Screen::Library(Tab::Browse, CatalogQuery::favourites()),
+                library.is_some_and(|(tab, q)| tab == Tab::Browse && q.favorites),
+            ),
+            Link::new(
+                "Collections",
+                "nav/libraries",
+                Screen::Library(Tab::Collections, Default::default()),
+                library.is_some_and(|(tab, _)| tab == Tab::Collections),
+            ),
+        ];
+        for lib in &self.libraries {
+            if matches!(
+                lib.collection_type.as_deref(),
+                Some("boxsets" | "playlists")
+            ) {
+                continue;
+            }
+            let kind = lib.catalog_kind().unwrap_or("Folder");
+            let glyph = match kind {
+                "Movie" | "MusicVideo" => "nav/movies",
+                "Series" => "nav/shows",
+                "MusicAlbum" => "nav/music",
+                _ => "nav/folder",
             };
-        let libraries_active = matches!(screen, Screen::Library(..) | Screen::Copies { .. })
-            && !(show_children && shortcuts.iter().any(|l| Some(l.id.as_str()) == scope));
-        let libraries = div()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .when(libraries_active, |d| d.bg(rgb(ACTIVE)))
+            tabs.push(Link::new(
+                lib.name.clone(),
+                glyph,
+                Screen::Library(
+                    Tab::Browse,
+                    CatalogQuery {
+                        kind,
+                        library: Some(lib.id.clone()),
+                        ..Default::default()
+                    },
+                ),
+                library.is_some_and(|(tab, q)| {
+                    matches!(tab, Tab::Browse | Tab::Recommended)
+                        && !q.favorites
+                        && q.library.as_ref() == Some(&lib.id)
+                }),
+            ));
+        }
+        let inset = (width * 0.022).clamp(12., 44.);
+        let mut bar = div()
+            .track_focus(&self.navigation_focus)
+            .tab_stop(false)
             .w_full()
             .flex_none()
-            .child(
-                destination(
-                    "Libraries",
-                    "nav/libraries",
-                    libraries_active,
-                    Screen::Library(Tab::Browse, CatalogQuery::default()),
-                    cx,
-                )
-                .w_auto()
-                .flex_1()
-                .min_w_0(),
-            )
-            .when(progress > 0.7 && !shortcuts.is_empty(), |d| {
-                let hint = if self.libraries_collapsed {
-                    "Expand libraries"
-                } else {
-                    "Collapse libraries"
-                };
-                d.child(
-                    tip(
-                        div()
-                            .id("library-disclosure")
-                            .mr(px(8.))
-                            .size(px(36.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .opacity(progress)
-                            .text_color(rgb(MUTED))
-                            .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(TEXT)))
-                            .child(
-                                icon(
-                                    if self.libraries_collapsed {
-                                        "\u{e70d}"
-                                    } else {
-                                        "\u{e70e}"
-                                    },
-                                    12.,
-                                )
-                                .font_weight(FontWeight::BOLD),
-                            ),
-                        hint,
-                    )
-                    .on_click(cx.listener(|s, _, _, cx| {
-                        s.libraries_collapsed = !s.libraries_collapsed;
-                        cx.notify();
-                    })),
-                )
-            });
-        let items = div()
-            .id("navigation-items")
-            .size_full()
-            .min_h_0()
-            .overflow_y_scroll()
+            .h(px(NAV_HEIGHT))
+            .px(px(inset))
             .flex()
-            .flex_col()
-            .gap(px(GAP))
-            .px(px(8. + progress * 4.))
-            .py(px(16.))
-            .child(destination(
-                "Home",
-                "nav/home",
-                matches!(screen, Screen::Discover),
-                Screen::Discover,
-                cx,
-            ))
-            .child(libraries)
-            .when(show_children, |d| {
-                let height = (LIBRARY_ROW + GAP) * shortcuts.len() as f32 - GAP;
-                d.child(
-                    div()
-                        .w_full()
-                        .h(px(height * progress))
-                        .flex_none()
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .gap(px(GAP))
-                        .opacity(progress)
-                        .children(shortcuts.iter().map(|library| {
-                            let kind = library.catalog_kind().unwrap_or("Folder");
-                            let glyph = match kind {
-                                "Movie" | "MusicVideo" => "nav/movies",
-                                "Series" => "nav/shows",
-                                "MusicAlbum" => "nav/music",
-                                _ => "nav/folder",
-                            };
-                            let id = library.id.clone();
-                            row(
-                                SharedString::from(format!("nav/library/{id}")),
-                                library.name.clone().into(),
-                                glyph,
-                                scope == Some(id.as_str()),
-                                true,
-                                progress,
-                            )
-                            .on_click(cx.listener(
-                                move |s, _, w, cx| {
-                                    s.navigate(
-                                        Screen::Library(
-                                            Tab::Browse,
-                                            CatalogQuery {
-                                                kind,
-                                                library: Some(id.clone()),
-                                                ..Default::default()
-                                            },
-                                        ),
-                                        w,
-                                        cx,
-                                    );
-                                },
-                            ))
-                        })),
-                )
-            })
-            .child(destination(
-                "Search",
-                "nav/search",
-                matches!(screen, Screen::Search(_)),
-                Screen::Search(self.search.read(cx).value().trim().to_owned()),
-                cx,
-            ))
-            .child(destination(
-                "Downloads",
-                "nav/downloads",
-                matches!(screen, Screen::Downloads),
-                Screen::Downloads,
-                cx,
-            ))
-            .child(destination(
-                "Settings",
-                "nav/settings",
-                matches!(screen, Screen::Settings(_)),
-                Screen::Settings(SettingsPage::Overview),
-                cx,
-            ))
-            .child(div().flex_1().min_h(px(GAP)))
-            .child(destination(
+            .items_center()
+            .gap(px(4.))
+            .bg(rgb(0x171a20))
+            .border_b_1()
+            .border_color(rgb(0x30333a))
+            .child(home.button("nav-home".into(), 112., true, cx));
+        let mut overflow = Vec::new();
+        // Reserve the home link, More and the three utility buttons before fitting library names.
+        let mut remaining = width - 2. * inset - 112. - 76. - 3. * 36. - 32.;
+        for (i, link) in tabs.into_iter().enumerate() {
+            // Keep the library names legible on small windows. The two fixed shortcuts have distinct icons.
+            let show_name = width >= 900. || i >= 2;
+            let tab_width = if show_name {
+                (45. + link.name.chars().count() as f32 * 8.).clamp(76., 158.)
+            } else {
+                36.
+            };
+            if remaining >= tab_width && overflow.is_empty() {
+                bar = bar.child(link.button(("nav-tab", i).into(), tab_width, show_name, cx));
+                remaining -= tab_width + 4.;
+            } else {
+                overflow.push(link);
+            }
+        }
+        overflow.extend([
+            Link::new(
+                "All libraries",
+                "nav/libraries",
+                Screen::Library(Tab::Browse, Default::default()),
+                library.is_some_and(|(tab, q)| {
+                    matches!(tab, Tab::Browse | Tab::Recommended | Tab::Playlists)
+                        && q.library.is_none()
+                        && !q.favorites
+                }),
+            ),
+            Link::new(
                 "Explore",
                 "nav/explore",
-                matches!(screen, Screen::Explore | Screen::Anime),
                 Screen::Explore,
-                cx,
-            ))
-            .child(destination(
+                matches!(section, Screen::Explore | Screen::Anime),
+            ),
+            Link::new(
                 "Live TV",
                 "nav/live",
+                Screen::Live(false),
                 matches!(
-                    screen,
+                    section,
                     Screen::Live(_) | Screen::Guide(_) | Screen::Timers(_)
                 ),
-                Screen::Live(false),
-                cx,
-            ));
-        div()
-            .id("navigation-rail")
-            .absolute()
-            .left_0()
-            .top_0()
-            .w(px(RAIL + (WIDE_RAIL - RAIL) * progress))
-            .h_full()
-            .rounded_tr(px(32. * progress))
-            .bg(rgb(SURFACE))
-            .overflow_hidden()
-            .occlude()
-            .track_focus(&self.rail_focus)
-            .on_hover(cx.listener(|s, inside, _, cx| {
-                s.rail.set_expanded(*inside);
-                cx.notify();
-            }))
-            .child(items)
+            ),
+        ]);
+        let active = overflow.iter().any(|link| link.active);
+        let owner = cx.weak_entity();
+        bar = bar
+            .child(
+                Button::new("more-navigation")
+                    .ghost()
+                    .label("More ▾")
+                    .selected(active)
+                    .w(px(76.))
+                    .h(px(34.))
+                    .dropdown_menu(move |mut menu, w, _| {
+                        menu = menu
+                            .min_w(px(195.))
+                            .max_h((w.viewport_size().height - px(80.)).max(px(100.)))
+                            .scrollable(true);
+                        for link in &overflow {
+                            let target = link.screen.clone();
+                            let owner = owner.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(link.name.clone())
+                                    .checked(link.active)
+                                    .on_click(move |_, w, cx| {
+                                        let _ = owner
+                                            .update(cx, |s, cx| s.navigate(target.clone(), w, cx));
+                                    }),
+                            );
+                        }
+                        menu
+                    }),
+            )
+            .child(div().flex_1());
+        for link in [
+            Link::new(
+                "Search",
+                "nav/search",
+                Screen::Search(self.search.read(cx).value().trim().to_owned()),
+                matches!(section, Screen::Search(_)),
+            ),
+            Link::new(
+                "Downloads",
+                "nav/downloads",
+                Screen::Downloads,
+                matches!(section, Screen::Downloads),
+            ),
+            Link::new(
+                "Settings",
+                "nav/settings",
+                Screen::Settings(SettingsPage::Overview),
+                matches!(section, Screen::Settings(_)),
+            ),
+        ] {
+            bar = bar.child(link.button(link.glyph.into(), 36., false, cx));
+        }
+        bar
     }
 }

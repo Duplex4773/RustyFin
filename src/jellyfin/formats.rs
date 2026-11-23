@@ -149,15 +149,20 @@ impl Item {
         )
     }
 
-    pub fn file_formats(&self, selected: Option<&str>) -> Formats {
+    pub fn detail_source(&self, selected: Option<&str>) -> Option<&Source> {
         let sources = self.media_sources.as_deref().unwrap_or_default();
-        let source = match selected {
+        match selected {
             Some(id) => sources.iter().find(|s| s.id == id),
             None => sources
                 .iter()
                 .find(|s| s.supports_direct_play)
                 .or_else(|| sources.first()),
-        };
+        }
+    }
+
+    pub fn file_formats(&self, selected: Option<&str>) -> Formats {
+        let sources = self.media_sources.as_deref().unwrap_or_default();
+        let source = self.detail_source(selected);
         let streams = source
             .and_then(|s| s.media_streams.as_deref())
             .filter(|s| !s.is_empty())
