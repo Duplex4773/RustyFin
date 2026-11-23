@@ -69,7 +69,7 @@ impl Stream {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Formats {
     fields: [BTreeSet<String>; 3],
     // Only label an entire group with a value when all files report that field.

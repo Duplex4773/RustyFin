@@ -35,6 +35,10 @@ impl Artwork {
         self.pending.clear();
     }
 
+    pub fn loading(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn retry(&mut self) {
         self.entries.retain(|_, v| v.is_some());
     }

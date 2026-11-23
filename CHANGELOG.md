@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added the Waterline logo to Home and Quick Connect, and the matching fin icon to the Windows app.
+- Library scrolling is smoother on high-refresh displays. The poster grid draws artwork, captions and format strips for the visible rows in fewer layout passes.
 - Mouse-wheel scrolling eases into place on browsing pages and in playback menus. Fine scrolling input stays immediate, and RustyFin respects the Windows animation setting.
 - Use the mouse Back and Forward buttons to revisit pages, including the selected library poster and scroll position. During playback, Back closes the current player menu or returns to browsing.
 - Recently Added TV uses the same portrait posters as Recently Added Movies. Both rows centre titles and years beneath the artwork and show ratings when available. Series posters also show unwatched episode counts and label ongoing shows with “Present”.

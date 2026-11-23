@@ -38,6 +38,10 @@ fn needs_summary(item: &Item) -> bool {
 }
 
 impl CardFormats {
+    pub fn loading(&self) -> bool {
+        self.pending > 0
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.pending = 0;

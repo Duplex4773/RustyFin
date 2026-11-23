@@ -1,5 +1,6 @@
 mod anime;
 mod catalog;
+mod catalog_poster;
 mod credits;
 pub(super) use credits::credit_ranges;
 mod detail;
@@ -273,6 +274,28 @@ fn poster_scores(item: &Item) -> Div {
     scores
 }
 
+fn card_frame(face: Div, width: f32, selected: bool, id: ElementId) -> Stateful<Div> {
+    let face = if selected {
+        face.with_animation(
+            "poster-focus-lift",
+            Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
+            |d, t| d.top(px(-POSTER_LIFT * t)),
+        )
+        .into_any_element()
+    } else {
+        face.into_any_element()
+    };
+    div()
+        .id(id)
+        .group("media-card")
+        .w(px(width))
+        .min_w_0()
+        .flex_none()
+        .cursor_pointer()
+        .pt(px(POSTER_LIFT))
+        .child(face)
+}
+
 impl Library {
     fn card(
         &self,
@@ -283,13 +306,33 @@ impl Library {
         id: ElementId,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let continued = matches!(layout, CardLayout::Shelf(ShelfKind::Continue));
-        let shelf = matches!(layout, CardLayout::Shelf(_));
-        let recent = shelf && !continued;
-        let key = match layout {
-            CardLayout::Shelf(kind) => kind.art(item),
-            CardLayout::Catalog { poster } => item.art(poster),
+        let face = match layout {
+            CardLayout::Shelf(kind) => self.shelf_face(item, width, kind, selected, &id, cx),
+            CardLayout::Catalog { poster } => {
+                self.catalog_face(item, width, poster, selected, &id, cx)
+            }
         };
+        let target = item.clone();
+        card_frame(face, width, selected, id).on_click(cx.listener(
+            move |s, _, w, cx| match layout {
+                CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
+                CardLayout::Catalog { .. } => s.open_item(target.clone(), w, cx),
+            },
+        ))
+    }
+
+    fn shelf_face(
+        &self,
+        item: &Item,
+        width: f32,
+        kind: ShelfKind,
+        selected: bool,
+        id: &ElementId,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let continued = kind == ShelfKind::Continue;
+        let recent = !continued;
+        let key = kind.art(item);
         let height = (width
             * if continued {
                 9. / 16.
@@ -351,7 +394,7 @@ impl Library {
                         .child(title(status, 12.)),
                 );
         }
-        if (!shelf || continued)
+        if continued
             && let Some(progress) = item
                 .run_time_ticks
                 .filter(|v| *v > 0)
@@ -361,39 +404,19 @@ impl Library {
             picture = picture.child(
                 div()
                     .absolute()
-                    .bottom(px(if continued { 0. } else { 4. }))
-                    .left(px(if continued { 0. } else { 6. }))
-                    .right(px(if continued { 0. } else { 6. }))
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
                     .h(px(3.))
                     .rounded_full()
                     .overflow_hidden()
-                    .bg(if continued {
-                        rgba(0xdde4d45c)
-                    } else {
-                        rgba(0x000000aa)
-                    })
+                    .bg(rgba(0xdde4d45c))
                     .child(
                         div()
                             .h_full()
                             .w(relative(progress.clamp(0., 1.)))
-                            .bg(rgb(if continued { LIME } else { TEXT })),
+                            .bg(rgb(LIME)),
                     ),
-            );
-        }
-        if !shelf && item.user_data.as_ref().and_then(|u| u.played) == Some(true) {
-            picture = picture.child(
-                div()
-                    .absolute()
-                    .top(px(5.))
-                    .right(px(5.))
-                    .rounded_full()
-                    .size(px(20.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(TEXT))
-                    .text_color(rgb(BG))
-                    .child(icon("\u{e73e}", 11.)),
             );
         }
         let unplayed = item
@@ -431,15 +454,14 @@ impl Library {
                     }),
             );
         }
-        let outline = if shelf { LIME } else { TEXT };
         picture = picture.child(
             div()
                 .absolute()
                 .inset_0()
                 .rounded(px(8.))
                 .border_2()
-                .border_color(if selected { rgb(outline) } else { rgba(0) })
-                .group_hover("media-card", move |s| s.border_color(rgb(outline))),
+                .border_color(if selected { rgb(LIME) } else { rgba(0) })
+                .group_hover("media-card", |s| s.border_color(rgb(LIME))),
         );
         if continued {
             let info = item.clone();
@@ -475,7 +497,7 @@ impl Library {
         } else {
             width
         };
-        if let Some(strip) = self.card_format_strip(item, &id, format_width, cx) {
+        if let Some(strip) = self.card_format_strip(item, id, format_width, cx) {
             picture = picture.child(strip);
         }
         let primary = if continued {
@@ -497,8 +519,7 @@ impl Library {
                 .map(|y| y.to_string())
                 .unwrap_or_default()
         };
-        let target = item.clone();
-        let name = title(primary.clone(), if shelf { 16. } else { 13. });
+        let name = title(primary.clone(), 16.);
         let name = if recent {
             name.w(px(width))
                 .text_center()
@@ -507,45 +528,13 @@ impl Library {
         } else {
             name.truncate()
         };
-        let (name, detail) = match layout {
-            CardLayout::Shelf(_) => (
-                name.line_height(px(20.)),
-                label(secondary, 13., if continued { 0xd9ddda } else { 0xa7afa9 })
-                    .line_height(px(18.)),
-            ),
-            CardLayout::Catalog { .. } => (
-                name.line_height(px(15.)),
-                label(secondary, 11., MUTED).line_height(px(12.)),
-            ),
-        };
-        let face = div()
+        let detail =
+            label(secondary, 13., if continued { 0xd9ddda } else { 0xa7afa9 }).line_height(px(18.));
+        div()
             .relative()
             .child(picture)
-            .child(name.mt(px(if shelf { 7. } else { 4. })))
-            .child(detail.truncate().when(recent, |d| d.text_center()));
-        let face = if selected {
-            face.with_animation(
-                "poster-focus-lift",
-                Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
-                |d, t| d.top(px(-POSTER_LIFT * t)),
-            )
-            .into_any_element()
-        } else {
-            face.into_any_element()
-        };
-        div()
-            .id(id)
-            .group("media-card")
-            .w(px(width))
-            .min_w_0()
-            .flex_none()
-            .cursor_pointer()
-            .pt(px(POSTER_LIFT))
-            .child(face)
-            .on_click(cx.listener(move |s, _, w, cx| match layout {
-                CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
-                CardLayout::Catalog { .. } => s.open_item(target.clone(), w, cx),
-            }))
+            .child(name.line_height(px(20.)).mt(px(7.)))
+            .child(detail.truncate().when(recent, |d| d.text_center()))
     }
 
     fn backdrop(&self, item: &Item) -> Div {
@@ -1544,8 +1533,16 @@ impl Render for Library {
         {
             self.load(w, cx);
         }
-        self.load_artwork(w, cx);
-        self.load_card_formats(w, cx);
+        // Several wheel frames move through exactly the same rows. Revisit
+        // prefetching when the visible range, page data or outstanding work changes.
+        let scrolling_wall = matches!(self.state.screen, Screen::Library(..))
+            && self.state.wheel_motion.is_some()
+            && self.player.is_none();
+        if !scrolling_wall || self.state.wall.needs_prefetch {
+            self.load_artwork(w, cx);
+            self.load_card_formats(w, cx);
+            self.state.wall.needs_prefetch = self.artwork.loading() || self.formats.loading();
+        }
         self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
         self.load_similar(w, cx);

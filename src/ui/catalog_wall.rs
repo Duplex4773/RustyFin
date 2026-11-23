@@ -8,6 +8,7 @@ pub(super) struct CatalogWall {
     pub scroll: UniformListScrollHandle,
     pub rail_scroll: ScrollHandle,
     pub visible: Range<usize>,
+    pub needs_prefetch: bool,
     pub columns: usize,
     pub card_width: f32,
     pub letters: BTreeMap<char, usize>,
@@ -27,6 +28,7 @@ impl Default for CatalogWall {
             scroll: UniformListScrollHandle::new(),
             rail_scroll: ScrollHandle::new(),
             visible: 0..0,
+            needs_prefetch: true,
             columns: 1,
             card_width: 0.,
             letters: BTreeMap::new(),
@@ -52,6 +54,7 @@ impl CatalogWall {
     }
 
     pub fn suspend(&mut self) {
+        self.needs_prefetch = true;
         self.page_job = None;
         self.index_job = None;
         self.rail_focus = None;
@@ -96,6 +99,9 @@ impl CatalogWall {
         let Some(total) = self.total else {
             return Some(0);
         };
+        if self.items.len() == total {
+            return None;
+        }
         // Prioritize what is on screen after a jump, then prefetch adjacent rows.
         let first_missing = self
             .visible
@@ -114,6 +120,7 @@ impl CatalogWall {
     }
 
     fn receive(&mut self, offset: usize, page: Page, alphabetical: bool) {
+        self.needs_prefetch = true;
         let total = page.total_record_count;
         if self.total.is_some_and(|old| old != total) {
             self.invalidate();
@@ -141,6 +148,7 @@ impl CatalogWall {
     }
 
     pub fn update_items(&mut self, q: &CatalogQuery, update: &impl Fn(&mut Item)) {
+        self.needs_prefetch = true;
         let mut changed_membership = false;
         for item in self.items.values_mut() {
             let included = |i: &Item| {

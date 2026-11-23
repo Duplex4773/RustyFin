@@ -37,6 +37,7 @@ impl UniformListDecoration for VisibleRows {
                 || wall.card_width != self.layout.card_width
                 || wall.columns != columns
             {
+                wall.needs_prefetch = true;
                 wall.visible = visible;
                 wall.columns = columns;
                 wall.card_width = self.layout.card_width;
@@ -102,45 +103,39 @@ impl Library {
             wall.scroll
                 .scroll_to_item_strict(anchor / layout.columns, strategy);
         }
+        let view = cx.entity();
         let list = uniform_list(
             "catalog-wall",
             total.div_ceil(layout.columns),
-            cx.processor(move |s, rows: Range<usize>, w, cx| {
+            move |rows: Range<usize>, _, _| {
                 rows.map(|row| {
-                    let start = row * layout.columns;
-                    let mut line = div()
-                        .flex()
-                        .h(px(row_height))
-                        .px(px(PAD))
-                        .gap(px(CATALOG_GAP));
-                    for i in start..(start + layout.columns).min(total) {
-                        if let Some(item) = s.state.wall.item(i) {
-                            line = line.child(s.card(
-                                item,
-                                layout.card_width,
-                                CardLayout::Catalog {
-                                    poster: layout.poster,
-                                },
-                                s.keyboard && s.focus.is_focused(w) && s.state.selection == i,
-                                ("poster", i).into(),
-                                cx,
-                            ));
-                        } else {
-                            line = line.child(
-                                div()
-                                    .flex_none()
-                                    .w(px(layout.card_width))
-                                    .mt(px(POSTER_LIFT))
-                                    .h(px(image_height))
-                                    .rounded(px(8.))
-                                    .bg(rgb(SURFACE)),
-                            );
-                        }
-                    }
-                    line
+                    // The row dimensions are already known. UniformList measures a
+                    // sample twice per frame. Only construct posters for painted rows.
+                    let view = view.clone();
+                    canvas(
+                        move |bounds, w, cx| {
+                            let start = row * layout.columns;
+                            let mut line = view
+                                .update(cx, |s, cx| {
+                                    s.catalog_row(
+                                        start..(start + layout.columns).min(total),
+                                        layout,
+                                        image_height,
+                                        w,
+                                        cx,
+                                    )
+                                })
+                                .into_any_element();
+                            line.prepaint_as_root(bounds.origin, bounds.size.into(), w, cx);
+                            line
+                        },
+                        |_, mut line, w, cx| line.paint(w, cx),
+                    )
+                    .w_full()
+                    .h(px(row_height))
                 })
                 .collect()
-            }),
+            },
         )
         .track_scroll(wall.scroll.clone())
         .with_decoration(VisibleRows {
@@ -158,6 +153,46 @@ impl Library {
                 .child(list)
                 .when(alphabet, |d| d.child(self.alphabet_rail(q.descending, cx))),
         )
+    }
+
+    fn catalog_row(
+        &self,
+        indices: Range<usize>,
+        layout: CatalogGrid,
+        image_height: f32,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let focused = self.keyboard && self.focus.is_focused(w);
+        let mut line = div().size_full().flex().px(px(PAD)).gap(px(CATALOG_GAP));
+        for i in indices {
+            line = if let Some(item) = self.state.wall.item(i) {
+                let id = ("poster", i).into();
+                let selected = focused && self.state.selection == i;
+                let face =
+                    self.catalog_face(item, layout.card_width, layout.poster, selected, &id, cx);
+                line.child(
+                    card_frame(face, layout.card_width, selected, id).on_click(cx.listener(
+                        move |s, _, w, cx| {
+                            if let Some(item) = s.state.wall.item(i).cloned() {
+                                s.open_item(item, w, cx);
+                            }
+                        },
+                    )),
+                )
+            } else {
+                line.child(
+                    div()
+                        .flex_none()
+                        .w(px(layout.card_width))
+                        .mt(px(POSTER_LIFT))
+                        .h(px(image_height))
+                        .rounded(px(8.))
+                        .bg(rgb(SURFACE)),
+                )
+            };
+        }
+        line
     }
 
     fn alphabet_rail(&self, descending: bool, cx: &mut Context<Self>) -> impl IntoElement {
