@@ -272,7 +272,7 @@ impl Library {
                 .profile_path()
                 .and_then(|p| preferences::save(&p.join("preferences.json"), &self.prefs))
         {
-            self.message = format!("Could not save playback preferences. {e}");
+            self.message = format!("Could not save preferences. {e}");
         }
         cx.notify();
     }

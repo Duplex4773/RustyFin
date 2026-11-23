@@ -15,7 +15,7 @@ impl ViewState {
 
     pub(in crate::ui) fn similar_cards(&self, w: &Window) -> (CatalogGrid, Range<usize>, &[Item]) {
         let width = f32::from(w.viewport_size().width) - 2. * detail::detail_inset(w);
-        let layout = CatalogGrid::fit(width, w.scale_factor(), 11);
+        let layout = CatalogGrid::fit(width, w.scale_factor(), 192., 11);
         let items = self
             .similar
             .as_ref()

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Browse shows the library name and matching title count in a compact toolbar. Choose a sort order directly, remove active filters, or switch between Small, Medium and Large posters. RustyFin remembers the poster size for each profile.
 - Added the Waterline logo to Home and Quick Connect, and the matching fin icon to the Windows app.
 - Library scrolling is smoother on high-refresh displays. The poster grid draws artwork, captions and format strips for the visible rows in fewer layout passes.
 - Mouse-wheel scrolling eases into place on browsing pages and in playback menus. Fine scrolling input stays immediate, and RustyFin respects the Windows animation setting.

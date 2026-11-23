@@ -126,9 +126,12 @@ impl Library {
                 );
             }
             Screen::Library(..) => {
-                let poster =
-                    super::screens::CatalogGrid::for_wall(w, self.state.screen.alphabetical())
-                        .poster;
+                let poster = super::screens::CatalogGrid::for_wall(
+                    w,
+                    self.state.screen.alphabetical(),
+                    self.prefs.poster_size,
+                )
+                .poster;
                 plan.extend(self.state.wall.near_items().filter_map(|i| i.art(poster)));
             }
             _ => {

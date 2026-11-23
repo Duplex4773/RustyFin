@@ -195,6 +195,7 @@ pub struct Library {
     shelf_light: glass::ShelfLight,
     menu_focus: playback::MenuFocus,
     filters_open: bool,
+    browse_menu: Option<(&'static str, Entity<gpui_component::menu::PopupMenu>)>,
     controls: Controls,
     prefs: Preferences,
     accounts: Vec<crate::jellyfin::Account>,
@@ -309,6 +310,7 @@ impl Library {
             shelf_light: Default::default(),
             menu_focus: playback::MenuFocus::new(cx),
             filters_open: false,
+            browse_menu: None,
             controls: Default::default(),
             prefs: Default::default(),
             accounts: vec![],
@@ -530,6 +532,7 @@ impl Library {
         self.failure = None;
         self.rebind = None;
         self.filters_open = false;
+        self.browse_menu = None;
         self.keyboard = false;
         self.state.wall.suspend();
         self.last_slide = Instant::now();
@@ -1504,6 +1507,13 @@ impl Library {
 
     fn regular_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
+        if self
+            .browse_menu
+            .as_ref()
+            .is_some_and(|(_, menu)| menu.read(cx).focus_handle(cx).contains_focused(window, cx))
+        {
+            return;
+        }
         if key == "tab" {
             if event.keystroke.modifiers.shift {
                 window.focus_prev();

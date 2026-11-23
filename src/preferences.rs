@@ -41,6 +41,7 @@ pub struct MpvSettings {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub poster_size: PosterSize,
     pub autoplay: bool,
     pub mpv: MpvSettings,
     pub auto_skip: bool,
@@ -59,6 +60,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            poster_size: PosterSize::default(),
             mpv: Default::default(),
             auto_skip: false,
             all_servers: false,
@@ -73,6 +75,13 @@ impl Default for Preferences {
             shortcuts: Default::default(),
         }
     }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PosterSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
 }
 fn directory() -> Result<PathBuf> {
     let base = PathBuf::from(

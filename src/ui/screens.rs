@@ -1,4 +1,5 @@
 mod anime;
+mod browse;
 mod catalog;
 mod catalog_poster;
 mod credits;
@@ -23,7 +24,7 @@ pub(super) use player_chrome::PREVIEW_WIDTH;
 mod player_menu;
 use super::artwork::background;
 use super::*;
-use crate::{jellyfin::ArtKind, player::CONTROLS_HEIGHT};
+use crate::{jellyfin::ArtKind, player::CONTROLS_HEIGHT, preferences::PosterSize};
 use gpui_component::tooltip::Tooltip;
 
 const BG: u32 = 0x0e0f12;
@@ -191,12 +192,12 @@ pub(super) struct CatalogGrid {
 
 impl CatalogGrid {
     fn new(viewport_width: f32, scale: f32) -> Self {
-        Self::fit(viewport_width - 2. * PAD, scale, 15)
+        Self::fit(viewport_width - 2. * PAD, scale, 192., 15)
     }
 
-    fn fit(available: f32, scale: f32, max_columns: usize) -> Self {
+    fn fit(available: f32, scale: f32, target_width: f32, max_columns: usize) -> Self {
         let available = available.max(1.);
-        let columns = ((available + CATALOG_GAP) / (192. + CATALOG_GAP))
+        let columns = ((available + CATALOG_GAP) / (target_width + CATALOG_GAP))
             .round()
             .clamp(1., max_columns as f32) as usize;
         let card_width =
@@ -701,194 +702,6 @@ impl Library {
         self.state.page = None;
         self.state.scroll = ScrollHandle::new();
         self.load(w, cx);
-    }
-
-    fn browse(&self, tab: Tab, q: &CatalogQuery, w: &Window, cx: &mut Context<Self>) -> Div {
-        let mut tabs = div().flex().items_center().gap_1().flex_wrap();
-        for (t, name) in [
-            (Tab::Recommended, "Recommended"),
-            (Tab::Browse, "Browse"),
-            (Tab::Collections, "Collections"),
-            (Tab::Playlists, "Playlists"),
-        ] {
-            let query = q.clone();
-            tabs = tabs.child(pill(name, name, None, t == tab).on_click(cx.listener(
-                move |s, _, w, cx| s.navigate(Screen::Library(t, query.clone()), w, cx),
-            )));
-        }
-        let mut tool = div().flex().items_center().gap_2().flex_wrap();
-        if matches!(tab, Tab::Browse | Tab::Recommended) {
-            let all = CatalogQuery::favourites().kind;
-            for (kind, name) in (q.favorites || q.kind == all)
-                .then_some((all, "All"))
-                .into_iter()
-                .chain([
-                    ("Movie", "Movies"),
-                    ("Series", "TV Shows"),
-                    ("Episode", "Episodes"),
-                    ("MusicAlbum", "Albums"),
-                    ("MusicArtist", "Artists"),
-                    ("Audio", "Songs"),
-                ])
-            {
-                tool = tool.child(
-                    pill(name, name, None, q.kind == kind)
-                        .h(px(28.))
-                        .px_3()
-                        .on_click(cx.listener(move |s, _, w, cx| {
-                            s.change_filter(|q| q.kind = kind, w, cx)
-                        })),
-                );
-            }
-        }
-        if tab == Tab::Browse {
-            let q = q.clone();
-            tool = tool.child(
-                glyph_button("Shuffle library", "\u{e8b1}").on_click(cx.listener(
-                    move |s, _, w, cx| s.play_queue(Some(q.clone()), None, true, false, w, cx),
-                )),
-            );
-        }
-        let current_library = self
-            .libraries
-            .iter()
-            .find(|l| Some(&l.id) == q.library.as_ref())
-            .map(|l| l.name.as_str());
-        let filter_name = match (current_library, q.favorites) {
-            (Some(n), true) => format!("{n} · Favorites"),
-            (Some(n), false) => n.to_owned(),
-            (None, true) => "Favorites".to_owned(),
-            (None, false) => "Filters".to_owned(),
-        };
-        tool = tool.child(
-            pill(
-                "filters",
-                filter_name,
-                Some(FILTER),
-                self.filters_open || q.favorites || q.library.is_some(),
-            )
-            .h(px(28.))
-            .px_3()
-            .on_click(cx.listener(|s, _, _, cx| {
-                s.filters_open = !s.filters_open;
-                cx.notify();
-            })),
-        );
-        if tab != Tab::Recommended {
-            let sort_label = match q.sort {
-                "DateCreated" => "Recently added",
-                "CommunityRating" => "Rating",
-                _ if q.descending => "Title Z–A",
-                _ => "Title A–Z",
-            };
-            tool = tool.child(
-                tip(
-                    pill("sort", sort_label, Some(SORT), false)
-                        .h(px(28.))
-                        .px_3(),
-                    "Change sort order",
-                )
-                .on_click(cx.listener(|s, _, w, cx| {
-                    s.change_filter(
-                        |q| {
-                            (q.sort, q.descending) = match (q.sort, q.descending) {
-                                ("SortName", false) => ("SortName", true),
-                                ("SortName", true) => ("DateCreated", true),
-                                ("DateCreated", _) => ("CommunityRating", true),
-                                _ => ("SortName", false),
-                            };
-                        },
-                        w,
-                        cx,
-                    );
-                })),
-            );
-        }
-        let mut header = div()
-            .px(px(PAD))
-            .py_3()
-            .flex()
-            .gap_2()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(tabs)
-                    .child(
-                        glyph_button("Refresh", REFRESH)
-                            .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
-                    ),
-            )
-            .child(tool);
-        if self.filters_open {
-            let mut filters = div().flex().flex_wrap().gap_2().child(
-                pill("all-libraries", "All libraries", None, q.library.is_none()).on_click(
-                    cx.listener(|s, _, w, cx| s.change_filter(|q| q.library = None, w, cx)),
-                ),
-            );
-            for (i, lib) in self.libraries.iter().enumerate() {
-                let id = lib.id.clone();
-                let kind = lib.catalog_kind();
-                filters = filters.child(
-                    pill(
-                        ("library-filter", i),
-                        lib.name.clone(),
-                        None,
-                        q.library.as_ref() == Some(&id),
-                    )
-                    .on_click(cx.listener(move |s, _, w, cx| {
-                        s.change_filter(
-                            |q| {
-                                q.library = Some(id.clone());
-                                if let Some(k) = kind {
-                                    q.kind = k;
-                                }
-                            },
-                            w,
-                            cx,
-                        )
-                    })),
-                );
-            }
-            filters = filters.child(pill("unwatched", "Unwatched", None, q.unwatched).on_click(
-                cx.listener(|s, _, w, cx| s.change_filter(|q| q.unwatched = !q.unwatched, w, cx)),
-            ));
-            let mut letters = div().flex().flex_wrap().gap_1().child(
-                pill("all-letters", "All", None, q.initial.is_none())
-                    .h(px(24.))
-                    .on_click(
-                        cx.listener(|s, _, w, cx| s.change_filter(|q| q.initial = None, w, cx)),
-                    ),
-            );
-            for (i, c) in ('A'..='Z').enumerate() {
-                letters = letters.child(
-                    pill(("letter", i), c.to_string(), None, q.initial == Some(c))
-                        .h(px(24.))
-                        .px_2()
-                        .on_click(cx.listener(move |s, _, w, cx| {
-                            s.change_filter(|q| q.initial = Some(c), w, cx)
-                        })),
-                );
-            }
-            header = header.child(letters);
-            header = header.child(filters.child(
-                pill("favorites", "Favorites", Some("\u{eb51}"), q.favorites).on_click(
-                    cx.listener(|s, _, w, cx| {
-                        s.change_filter(|q| q.favorites = !q.favorites, w, cx)
-                    }),
-                ),
-            ));
-        }
-        div()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(self.catalog_wall(q, w, cx))
     }
 
     fn search_view(&self, term: &str, w: &Window, cx: &mut Context<Self>) -> Div {
@@ -1636,6 +1449,7 @@ impl Render for Library {
 #[cfg(test)]
 mod poster_tests {
     use super::{ArtKind, CATALOG_GAP, CatalogGrid, Item, PAD, ShelfKind, poster_years};
+    use crate::preferences::PosterSize;
 
     #[test]
     fn recent_series_use_primary_posters_and_respect_series_status() {
@@ -1675,6 +1489,27 @@ mod poster_tests {
             let used = grid.card_width * columns as f32 + CATALOG_GAP * (columns - 1) as f32;
             let remaining = width - 2. * PAD - used;
             assert!((0. ..columns as f32).contains(&remaining));
+        }
+    }
+
+    #[test]
+    fn library_poster_sizes_reflow_at_windowed_and_maximized_4k_widths() {
+        for (client, counts) in [(1348., [7, 5, 4]), (3840., [20, 15, 11])] {
+            let scale = 1.25;
+            let available = client / scale - 2. * PAD - 24.;
+            for (size, count) in [PosterSize::Small, PosterSize::Medium, PosterSize::Large]
+                .into_iter()
+                .zip(counts)
+            {
+                let grid = CatalogGrid::wall_fit(available, scale, size);
+                assert_eq!(grid.columns, count);
+                let used = grid.card_width * count as f32 + CATALOG_GAP * (count - 1) as f32;
+                assert!((0. ..count as f32).contains(&(available - used)));
+                assert_eq!(
+                    grid.poster == ArtKind::LargePoster,
+                    grid.card_width * scale > 320.
+                );
+            }
         }
     }
 }

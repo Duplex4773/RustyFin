@@ -30,6 +30,12 @@ macro_rules! glyph {
 
 const ICONS: &[(&str, &str)] = &[
     (
+        "icons/check.svg",
+        glyph!(
+            r#"<path d="m4 12 5 5L20 6" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>"#
+        ),
+    ),
+    (
         "nav/heart",
         glyph!(
             r#"<path d="M12 21 3.2 12.5C-2.3 6.9 5.6-.7 11 5l1 1.1L13 5c5.4-5.7 13.3 1.9 7.8 7.5z"/>"#

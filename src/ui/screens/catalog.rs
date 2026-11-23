@@ -4,10 +4,20 @@ use std::ops::Range;
 const INDEX_WIDTH: f32 = 24.;
 
 impl CatalogGrid {
-    pub(in crate::ui) fn for_wall(w: &Window, alphabetical: bool) -> Self {
-        let width =
-            f32::from(w.viewport_size().width) - if alphabetical { INDEX_WIDTH } else { 0. };
-        Self::new(width, w.scale_factor())
+    pub(in crate::ui) fn for_wall(w: &Window, alphabetical: bool, size: PosterSize) -> Self {
+        let available = f32::from(w.viewport_size().width)
+            - 2. * PAD
+            - if alphabetical { INDEX_WIDTH } else { 0. };
+        Self::wall_fit(available, w.scale_factor(), size)
+    }
+
+    pub(super) fn wall_fit(available: f32, scale: f32, size: PosterSize) -> Self {
+        let (target_width, max_columns) = match size {
+            PosterSize::Small => (146., 20),
+            PosterSize::Medium => (192., 15),
+            PosterSize::Large => (254., 11),
+        };
+        Self::fit(available, scale, target_width, max_columns)
     }
 }
 
@@ -51,7 +61,7 @@ impl UniformListDecoration for VisibleRows {
 impl Library {
     pub(super) fn catalog_wall(&self, q: &CatalogQuery, w: &Window, cx: &mut Context<Self>) -> Div {
         let alphabet = self.state.screen.alphabetical();
-        let layout = CatalogGrid::for_wall(w, alphabet);
+        let layout = CatalogGrid::for_wall(w, alphabet, self.prefs.poster_size);
         let wall = &self.state.wall;
         let mut body = div().flex_1().min_h_0().flex().flex_col();
         if let Some(error) = wall.page_error.as_ref().or(wall.index_error.as_ref()) {

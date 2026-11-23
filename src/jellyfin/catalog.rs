@@ -406,42 +406,37 @@ impl Server {
         offset: usize,
         limit: usize,
     ) -> Result<reqwest::blocking::RequestBuilder> {
-        if search.is_none() && q.kind == "Folder" {
-            let mut req = self.get(&["Items"]).query(&[
-                ("userId", self.user_id()?),
-                ("recursive", "false"),
-                ("sortBy", "IsFolder,SortName"),
-                ("startIndex", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ]);
-            if let Some(parent) = &q.library {
-                req = req.query(&[("parentId", parent)]);
-            }
-            return Ok(req);
-        }
+        let folders = search.is_none() && q.kind == "Folder";
+        let order = if q.descending {
+            "Descending"
+        } else {
+            "Ascending"
+        };
         let mut request = self.get(&["Items"]).query(&[
             ("userId", self.user_id()?),
-            ("recursive", "true"),
-            (
-                "includeItemTypes",
-                if search.is_some() {
-                    MOVING_PICTURES
-                } else {
-                    q.kind
-                },
-            ),
-            ("sortBy", q.sort),
-            (
-                "sortOrder",
-                if q.descending {
-                    "Descending"
-                } else {
-                    "Ascending"
-                },
-            ),
+            ("recursive", if folders { "false" } else { "true" }),
             ("limit", &limit.to_string()),
             ("startIndex", &offset.to_string()),
         ]);
+        request = if folders {
+            request.query(&[
+                ("sortBy", format!("IsFolder,{}", q.sort)),
+                ("sortOrder", format!("Ascending,{order}")),
+            ])
+        } else {
+            request.query(&[
+                (
+                    "includeItemTypes",
+                    if search.is_some() {
+                        MOVING_PICTURES
+                    } else {
+                        q.kind
+                    },
+                ),
+                ("sortBy", q.sort),
+                ("sortOrder", order),
+            ])
+        };
         if let Some(term) = search {
             request = request.query(&[("searchTerm", term)]);
         }
