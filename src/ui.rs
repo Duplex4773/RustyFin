@@ -182,7 +182,7 @@ pub struct Library {
     artwork: Artwork,
     formats: formats::CardFormats,
     navigation_focus: FocusHandle,
-    navigation_tint: glass::NavigationTint,
+    shelf_light: glass::ShelfLight,
     menu_focus: playback::MenuFocus,
     filters_open: bool,
     people_search: bool,
@@ -288,7 +288,7 @@ impl Library {
             artwork: Artwork::default(),
             formats: Default::default(),
             navigation_focus: cx.focus_handle(),
-            navigation_tint: Default::default(),
+            shelf_light: Default::default(),
             menu_focus: playback::MenuFocus::new(cx),
             filters_open: false,
             people_search: false,
@@ -1600,6 +1600,7 @@ impl Library {
                     cx,
                 ),
                 _ if matches!(self.state.screen, Screen::Discover) => {
+                    self.shelf_light.hovered = None;
                     match (key, self.state.shelf) {
                         ("down" | "pagedown", None) if !self.shelves.is_empty() => {
                             self.change_shelf(0, cx)

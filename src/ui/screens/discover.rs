@@ -3,6 +3,67 @@ use std::collections::HashSet;
 
 const GUTTER: f32 = 32.;
 const GAP: f32 = 12.;
+const CHARCOAL: u32 = 0x101413;
+const GLASS_INSET: f32 = 14.;
+
+fn wash_start(kind: Option<ShelfKind>) -> f32 {
+    match kind {
+        Some(ShelfKind::Continue) => 0.42,
+        Some(ShelfKind::RecentTv) => 0.74,
+        Some(ShelfKind::RecentMovies) | None => 1.,
+    }
+}
+
+fn frosted_panel(texture: Div, tint: Rgba, center: f32, card_width: f32) -> Div {
+    let mut light = Hsla::from(tint);
+    light.l = 0.63;
+    light.a = 0.16;
+    div()
+        .relative()
+        .overflow_hidden()
+        .rounded(px(16.))
+        .bg(rgba(0x14181d26))
+        .px(px(GLASS_INSET))
+        .py(px(12.))
+        .child(texture)
+        .child(coat(112., 0xe5ebe50c, 0x11161916, 0., 1.).rounded(px(16.)))
+        .child(
+            div()
+                .absolute()
+                .left(px(center - card_width * 0.55))
+                .w(px(card_width * 1.1))
+                .top(px(12.))
+                .bottom(px(8.))
+                .rounded_full()
+                .shadow(vec![BoxShadow {
+                    color: light,
+                    offset: Point::default(),
+                    blur_radius: px(52.),
+                    spread_radius: px(14.),
+                }]),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(rgba(0xe1e9e41c)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(16.))
+                .right(px(16.))
+                .h(px(1.))
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(rgba(0xe9eee729), 0.),
+                    linear_color_stop(rgba(0xe9eee700), 1.),
+                )),
+        )
+}
 
 fn marquee_size(w: &Window) -> Size<Pixels> {
     let width = w.viewport_size().width;
@@ -137,13 +198,19 @@ impl Library {
         }
     }
 
-    pub(super) fn marquee_backdrop(&self, item: &Item, w: &Window, banner: Size<Pixels>) -> Div {
-        let base = div().absolute().inset_0().overflow_hidden();
-        let Some(image) = self
-            .artwork
+    pub(super) fn marquee_image(
+        &self,
+        item: &Item,
+        w: &Window,
+    ) -> Option<std::sync::Arc<RenderImage>> {
+        self.artwork
             .get(marquee_art(item, w))
             .or_else(|| self.artwork.get(background(item)))
-        else {
+    }
+
+    pub(super) fn marquee_backdrop(&self, item: &Item, w: &Window, banner: Size<Pixels>) -> Div {
+        let base = div().absolute().inset_0().overflow_hidden();
+        let Some(image) = self.marquee_image(item, w) else {
             return base;
         };
         let source = image.size(0);
@@ -415,6 +482,19 @@ impl Library {
             .child(coat(90., 0x070a0c65, 0x070a0c00, 0., 0.49))
             .child(coat(180., 0x07090cc4, 0x07090c00, 0., 0.16))
             .child(coat(180., 0x10141300, 0x101413ff, 0.44, 1.))
+            .child(
+                div()
+                    .absolute()
+                    .top(relative(0.42))
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .child(
+                        self.artwork
+                            .glass
+                            .wash(0., wash_start(self.shelves.first().map(|s| s.kind))),
+                    ),
+            )
             .child(toolbar)
             .child(copy)
             .when(self.featured.len() > 1, |d| {
@@ -422,14 +502,14 @@ impl Library {
             })
     }
 
-    pub(super) fn discover(&self, w: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn discover(&mut self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
         let mut scroll = div()
             .id("discover-scroll")
             .track_scroll(&self.state.scroll)
             .overflow_y_scroll()
             .size_full()
             .pb(px(32.))
-            .bg(rgb(0x101413));
+            .bg(rgb(CHARCOAL));
         scroll.style().restrict_scroll_to_axis = Some(true);
         if let Some(item) = self.featured.get(self.hero) {
             scroll = scroll.child(self.marquee(item, w, cx));
@@ -447,10 +527,10 @@ impl Library {
         }
         let available = f32::from(w.viewport_size().width) - 2. * GUTTER;
         for (row, shelf) in self.shelves.iter().enumerate() {
-            let target = if shelf.kind == ShelfKind::RecentMovies {
-                154.
-            } else {
-                238.
+            let frosted = shelf.kind == ShelfKind::Continue;
+            let target = match shelf.kind {
+                ShelfKind::Continue => 238.,
+                ShelfKind::RecentTv | ShelfKind::RecentMovies => 154.,
             };
             let columns = ((available + GAP) / (target + GAP)).round().max(1.);
             let width = ((available + GAP) / columns - GAP).floor();
@@ -463,18 +543,29 @@ impl Library {
                 .w_full()
                 .flex()
                 .gap(px(GAP));
+            let focused =
+                self.keyboard && self.focus.is_focused(w) && self.state.shelf == Some(row);
             for (i, item) in shelf.items.iter().enumerate() {
-                strip = strip.child(self.card(
+                let card = self.card(
                     item,
                     width,
                     CardLayout::Shelf(shelf.kind),
-                    self.keyboard
-                        && self.focus.is_focused(w)
-                        && self.state.shelf == Some(row)
-                        && self.state.selection == i,
+                    focused && self.state.selection == i,
                     ("home-card", row * 100 + i).into(),
                     cx,
-                ));
+                );
+                strip = strip.child(card.when(frosted, |d| {
+                    d.on_hover(cx.listener(move |s, inside, _, cx| {
+                        if *inside {
+                            s.shelf_light.hovered = Some(i);
+                        } else if s.shelf_light.hovered == Some(i) {
+                            s.shelf_light.hovered = None;
+                        } else {
+                            return;
+                        }
+                        cx.notify();
+                    }))
+                }));
             }
             let mut heading = div()
                 .flex()
@@ -503,13 +594,31 @@ impl Library {
                 }
                 heading = heading.child(arrows);
             }
-            scroll = scroll.child(
-                div()
-                    .px(px(GUTTER))
-                    .pt(px(if row == 0 { 20. } else { 24. }))
-                    .child(heading)
-                    .child(strip),
-            );
+            let mut section = div().relative().pt(px(if row == 0 { 16. } else { 24. }));
+            if shelf.kind != ShelfKind::RecentMovies {
+                let start = wash_start(Some(shelf.kind));
+                let end = wash_start(self.shelves.get(row + 1).map(|s| s.kind));
+                section = section.child(self.artwork.glass.wash(start, end));
+            }
+            let panel = if frosted {
+                let index = self
+                    .shelf_light
+                    .hovered
+                    .or(focused.then_some(self.state.selection));
+                let target = index
+                    .filter(|&i| i < shelf.items.len())
+                    .map_or(available * 0.24, |i| {
+                        i as f32 * (width + GAP) + width / 2. + f32::from(handle.offset().x)
+                    });
+                let center =
+                    GLASS_INSET + self.shelf_light.position(target.clamp(0., available), w);
+                section = section.px(px(GUTTER - GLASS_INSET));
+                frosted_panel(self.artwork.glass.frost_layer(), tint, center, width)
+            } else {
+                section = section.px(px(GUTTER));
+                div().relative()
+            };
+            scroll = scroll.child(section.child(panel.child(heading).child(strip)));
         }
         div().flex_1().min_w_0().min_h_0().child(scroll)
     }

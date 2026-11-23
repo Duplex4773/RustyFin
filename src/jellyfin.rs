@@ -68,6 +68,8 @@ pub struct Item {
     pub provider_ids: Option<HashMap<String, String>>,
     pub official_rating: Option<String>,
     pub community_rating: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critic_rating: Option<f64>,
     pub genres: Option<Vec<String>>,
     pub media_streams: Option<Vec<Stream>>,
     pub media_sources: Option<Vec<Source>>,
@@ -78,6 +80,8 @@ pub struct Item {
     pub current_program: Option<Box<Item>>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub timer_id: Option<String>,
     pub series_timer_id: Option<String>,
     pub is_series: Option<bool>,
@@ -114,6 +118,8 @@ pub struct Item {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct UserData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unplayed_item_count: Option<u32>,
     pub playback_position_ticks: Option<u64>,
     pub played: Option<bool>,
     pub is_favorite: Option<bool>,

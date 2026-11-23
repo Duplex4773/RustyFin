@@ -160,10 +160,7 @@ impl ShelfKind {
     pub fn art(self, item: &Item) -> Option<Art> {
         match self {
             Self::Continue => item.landscape(),
-            Self::RecentTv => item
-                .art(ArtKind::SmallBackdrop)
-                .or_else(|| item.landscape()),
-            Self::RecentMovies => item.art(ArtKind::Poster),
+            Self::RecentTv | Self::RecentMovies => item.art(ArtKind::Poster),
         }
     }
 }

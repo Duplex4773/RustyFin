@@ -89,20 +89,9 @@ impl Link {
 }
 
 impl Library {
-    pub(super) fn top_navigation(&mut self, w: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn top_navigation(&self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
         let screen = &self.state.screen;
-        let image = match screen {
-            Screen::Discover => self.featured.get(self.hero),
-            Screen::Detail(item, _) => Some(item.as_ref()),
-            _ => None,
-        }
-        .and_then(|item| {
-            self.artwork
-                .get(marquee_art(item, w))
-                .or_else(|| self.artwork.get(background(item)))
-        });
-        let tint = self.navigation_tint.sample(image.as_deref(), w);
         let scroll = if matches!(screen, Screen::Library(..)) {
             self.state.wall.scroll.0.borrow().base_handle.clone()
         } else {

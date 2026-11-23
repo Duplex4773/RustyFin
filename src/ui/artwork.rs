@@ -9,6 +9,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct Artwork {
     pub(super) trickplay: super::trickplay::Trickplay,
+    pub(super) glass: super::glass::ArtworkGlass,
     entries: HashMap<Art, Option<Arc<RenderImage>>>,
     pending: HashSet<Art>,
     session: u64,
@@ -29,6 +30,7 @@ impl Artwork {
             cx.drop_image(img, Some(w));
         }
         self.trickplay.clear(w, cx);
+        self.glass.clear(w, cx);
         self.session += 1;
         self.pending.clear();
     }

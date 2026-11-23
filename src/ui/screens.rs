@@ -222,6 +222,57 @@ enum CardLayout {
     Catalog { poster: ArtKind },
 }
 
+fn poster_years(item: &Item) -> String {
+    let Some(start) = item.production_year else {
+        return String::new();
+    };
+    if item.kind == "Series" {
+        if item.status.as_deref() == Some("Continuing") {
+            return format!("{start} – Present");
+        }
+        let end = item
+            .end_date
+            .as_deref()
+            .and_then(|date| date.get(..4)?.parse::<u32>().ok());
+        if let Some(end) = end.filter(|year| *year > start) {
+            return format!("{start} – {end}");
+        }
+    }
+    start.to_string()
+}
+
+fn poster_scores(item: &Item) -> Div {
+    let mut scores = div()
+        .absolute()
+        .bottom(px(5.))
+        .right(px(5.))
+        .flex()
+        .flex_col()
+        .items_end()
+        .gap(px(2.));
+    let critic = item
+        .critic_rating
+        .filter(|r| (0.0..=100.0).contains(r))
+        .map(|r| (format!("{r:.0}%"), 0xe8eee8, "Critic rating"));
+    let community = item
+        .community_rating
+        .filter(|&r| r > 0. && r <= 10.)
+        .map(|r| (format!("★ {r:.1}"), 0xffd35a, "Community rating"));
+    for (value, colour, name) in [critic, community].into_iter().flatten() {
+        scores = scores.child(
+            label(value, 11., colour)
+                .id(name)
+                .line_height(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .rounded(px(4.))
+                .px(px(5.))
+                .bg(rgba(0x080a0de6))
+                .tooltip(move |w, cx| Tooltip::new(name).build(w, cx)),
+        );
+    }
+    scores
+}
+
 impl Library {
     fn card(
         &self,
@@ -232,18 +283,15 @@ impl Library {
         id: ElementId,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let wide = matches!(
-            layout,
-            CardLayout::Shelf(ShelfKind::Continue | ShelfKind::RecentTv)
-        );
         let continued = matches!(layout, CardLayout::Shelf(ShelfKind::Continue));
         let shelf = matches!(layout, CardLayout::Shelf(_));
+        let recent = shelf && !continued;
         let key = match layout {
             CardLayout::Shelf(kind) => kind.art(item),
             CardLayout::Catalog { poster } => item.art(poster),
         };
         let height = (width
-            * if wide {
+            * if continued {
                 9. / 16.
             } else if matches!(item.kind.as_str(), "MusicAlbum" | "MusicArtist" | "Audio") {
                 1.
@@ -348,6 +396,41 @@ impl Library {
                     .child(icon("\u{e73e}", 11.)),
             );
         }
+        let unplayed = item
+            .user_data
+            .as_ref()
+            .and_then(|data| data.unplayed_item_count)
+            .filter(|&count| count > 0 && recent && item.kind == "Series");
+        if recent {
+            picture = picture.child(poster_scores(item));
+        }
+        if let Some(count) = unplayed {
+            let value = if count > 99 {
+                "99+".into()
+            } else {
+                count.to_string()
+            };
+            picture = picture.child(
+                label(value, 11., 0xffffff)
+                    .id("unplayed-episodes")
+                    .absolute()
+                    .top(px(5.))
+                    .right(px(5.))
+                    .min_w(px(21.))
+                    .h(px(21.))
+                    .px(px(3.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .rounded_full()
+                    .bg(rgb(0x23529e))
+                    .tooltip(move |w, cx| {
+                        let noun = if count == 1 { "episode" } else { "episodes" };
+                        Tooltip::new(format!("{count} unwatched {noun}")).build(w, cx)
+                    }),
+            );
+        }
         let outline = if shelf { LIME } else { TEXT };
         picture = picture.child(
             div()
@@ -387,32 +470,48 @@ impl Library {
                     })),
             );
         }
-        if let Some(strip) = self.card_format_strip(item, &id, width, cx) {
+        let format_width = if unplayed.is_some() {
+            width - 28.
+        } else {
+            width
+        };
+        if let Some(strip) = self.card_format_strip(item, &id, format_width, cx) {
             picture = picture.child(strip);
         }
-        let primary = if wide {
+        let primary = if continued {
             item.series_name.as_ref().unwrap_or(&item.name)
         } else {
             &item.name
         };
-        let secondary = if wide && item.series_name.is_some() {
+        let secondary = if continued && item.series_name.is_some() {
             match (item.parent_index_number, item.index_number) {
                 (Some(s), Some(e)) => format!("S{s:02} E{e:02}  ·  {}", item.name),
                 _ => item.name.clone(),
             }
         } else if item.kind == "Episode" {
             item.caption()
+        } else if recent {
+            poster_years(item)
         } else {
             item.production_year
                 .map(|y| y.to_string())
                 .unwrap_or_default()
         };
         let target = item.clone();
-        let name = title(primary.clone(), if shelf { 16. } else { 13. }).truncate();
+        let name = title(primary.clone(), if shelf { 16. } else { 13. });
+        let name = if recent {
+            name.w(px(width))
+                .text_center()
+                .line_clamp(1)
+                .text_ellipsis()
+        } else {
+            name.truncate()
+        };
         let (name, detail) = match layout {
             CardLayout::Shelf(_) => (
                 name.line_height(px(20.)),
-                label(secondary, 13., 0xa7afa9).line_height(px(18.)),
+                label(secondary, 13., if continued { 0xd9ddda } else { 0xa7afa9 })
+                    .line_height(px(18.)),
             ),
             CardLayout::Catalog { .. } => (
                 name.line_height(px(15.)),
@@ -423,7 +522,7 @@ impl Library {
             .relative()
             .child(picture)
             .child(name.mt(px(if shelf { 7. } else { 4. })))
-            .child(detail.truncate());
+            .child(detail.truncate().when(recent, |d| d.text_center()));
         let face = if selected {
             face.with_animation(
                 "poster-focus-lift",
@@ -1443,12 +1542,23 @@ impl Render for Library {
         self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
         self.load_similar(w, cx);
+        let discover = matches!(self.state.screen, Screen::Discover);
+        let artwork = match &self.state.screen {
+            Screen::Discover => self.featured.get(self.hero),
+            Screen::Detail(item, _) => Some(item.as_ref()),
+            _ => None,
+        }
+        .and_then(|item| self.marquee_image(item, w));
+        let tint = self
+            .artwork
+            .glass
+            .sample(artwork.as_deref(), discover, w, cx);
         let content = if self.server.is_none() {
             self.connection(cx)
         } else {
             match &self.state.screen {
                 Screen::Detail(item, season) => self.detail(item, season.as_deref(), w, cx),
-                Screen::Discover => self.discover(w, cx),
+                Screen::Discover => self.discover(tint, w, cx),
                 Screen::Library(tab, q) => self.browse(*tab, q, w, cx),
                 Screen::Search(term) => self.search_view(term, w, cx),
                 Screen::Live(_) | Screen::Guide(_) | Screen::Timers(_) => self.live_view(cx),
@@ -1475,7 +1585,7 @@ impl Render for Library {
                 .child(content),
         )
         .when(self.server.is_some(), |d| {
-            d.child(self.top_navigation(w, cx))
+            d.child(self.top_navigation(tint, w, cx))
         })
         .when_some(self.player.as_ref().filter(|p| p.audio_only), |r, p| {
             r.child(self.mini_player(p, cx))
@@ -1520,8 +1630,31 @@ impl Render for Library {
 }
 
 #[cfg(test)]
-mod catalog_grid_tests {
-    use super::{ArtKind, CATALOG_GAP, CatalogGrid, PAD};
+mod poster_tests {
+    use super::{ArtKind, CATALOG_GAP, CatalogGrid, Item, PAD, ShelfKind, poster_years};
+
+    #[test]
+    fn recent_series_use_primary_posters_and_respect_series_status() {
+        let mut series: Item = serde_json::from_value(serde_json::json!({
+            "Id": "show", "Name": "Show", "Type": "Series",
+            "ImageTags": {"Primary": "poster"}, "BackdropImageTags": ["backdrop"],
+            "ProductionYear": 2021, "EndDate": "2025-09-01T00:00:00Z", "Status": "Continuing"
+        }))
+        .unwrap();
+        assert_eq!(
+            ShelfKind::RecentTv.art(&series),
+            series.art(ArtKind::Poster)
+        );
+        assert_eq!(
+            ShelfKind::Continue.art(&series),
+            series.art(ArtKind::SmallBackdrop)
+        );
+        assert_eq!(poster_years(&series), "2021 – Present");
+        series.status = Some("Ended".into());
+        assert_eq!(poster_years(&series), "2021 – 2025");
+        series.production_year = Some(2025);
+        assert_eq!(poster_years(&series), "2025");
+    }
 
     #[test]
     fn posters_fill_each_row_at_windowed_and_4k_sizes() {
