@@ -10,7 +10,7 @@ fn marquee_size(w: &Window) -> Size<Pixels> {
     let viewport = w.viewport_size().height - px(NAV_HEIGHT);
     let extra = ((viewport - px(720.)) * 0.25).clamp(px(0.), viewport * 0.11);
     let height = (viewport * 0.62 + extra).clamp(px(286.), (width * 0.82).max(px(286.)));
-    size(width, height)
+    size(width, height + px(NAV_HEIGHT))
 }
 
 pub(in crate::ui) fn marquee_art(item: &Item, w: &Window) -> Option<crate::jellyfin::Art> {
@@ -331,7 +331,7 @@ impl Library {
             });
         let toolbar = div()
             .absolute()
-            .top(px(12.))
+            .top(px(NAV_CLEARANCE))
             .left(px(20.))
             .right(px(20.))
             .flex()
@@ -468,7 +468,10 @@ impl Library {
                     item,
                     width,
                     CardLayout::Shelf(shelf.kind),
-                    self.keyboard && self.state.shelf == Some(row) && self.state.selection == i,
+                    self.keyboard
+                        && self.focus.is_focused(w)
+                        && self.state.shelf == Some(row)
+                        && self.state.selection == i,
                     ("home-card", row * 100 + i).into(),
                     cx,
                 ));

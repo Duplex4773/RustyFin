@@ -138,14 +138,13 @@ impl Library {
                     CardLayout::Catalog {
                         poster: layout.poster,
                     },
-                    false,
+                    self.state.similar_focus[i].is_focused(w),
                     ("similar-title", i).into(),
                     cx,
                 )
                 .track_focus(&self.state.similar_focus[i])
                 .tab_stop(true)
                 .rounded_md()
-                .focus(|d| d.bg(rgb(ACTIVE)).border_1().border_color(rgb(LIME)))
                 .on_key_down(cx.listener(move |s, event: &KeyDownEvent, w, cx| {
                     let index = match event.keystroke.key.as_str() {
                         "left" => i.saturating_sub(1),

@@ -62,6 +62,7 @@ impl Library {
     pub(super) fn anime_view(&self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .id("anime-scroll")
+            .track_scroll(&self.state.scroll)
             .size_full()
             .overflow_y_scroll()
             .p_5()

@@ -90,7 +90,7 @@ impl Library {
                 Screen::Library(Tab::Browse | Tab::Recommended, _)
             );
         let image_height = (layout.card_width * if square { 1. } else { 1.5 }).round();
-        let row_height = image_height + 33.;
+        let row_height = image_height + 33. + POSTER_LIFT;
         if !wall.visible.is_empty()
             && (wall.card_width != layout.card_width || wall.columns != layout.columns)
         {
@@ -105,7 +105,7 @@ impl Library {
         let list = uniform_list(
             "catalog-wall",
             total.div_ceil(layout.columns),
-            cx.processor(move |s, rows: Range<usize>, _, cx| {
+            cx.processor(move |s, rows: Range<usize>, w, cx| {
                 rows.map(|row| {
                     let start = row * layout.columns;
                     let mut line = div()
@@ -121,7 +121,7 @@ impl Library {
                                 CardLayout::Catalog {
                                     poster: layout.poster,
                                 },
-                                s.keyboard && s.state.selection == i,
+                                s.keyboard && s.focus.is_focused(w) && s.state.selection == i,
                                 ("poster", i).into(),
                                 cx,
                             ));
@@ -130,6 +130,7 @@ impl Library {
                                 div()
                                     .flex_none()
                                     .w(px(layout.card_width))
+                                    .mt(px(POSTER_LIFT))
                                     .h(px(image_height))
                                     .rounded(px(8.))
                                     .bg(rgb(SURFACE)),

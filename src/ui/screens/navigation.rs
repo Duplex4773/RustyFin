@@ -89,9 +89,34 @@ impl Link {
 }
 
 impl Library {
-    pub(super) fn top_navigation(&self, w: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn top_navigation(&mut self, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
         let screen = &self.state.screen;
+        let image = match screen {
+            Screen::Discover => self.featured.get(self.hero),
+            Screen::Detail(item, _) => Some(item.as_ref()),
+            _ => None,
+        }
+        .and_then(|item| {
+            self.artwork
+                .get(marquee_art(item, w))
+                .or_else(|| self.artwork.get(background(item)))
+        });
+        let tint = self.navigation_tint.sample(image.as_deref(), w);
+        let scroll = if matches!(screen, Screen::Library(..)) {
+            self.state.wall.scroll.0.borrow().base_handle.clone()
+        } else {
+            self.state.scroll.clone()
+        };
+        let distance = (f32::from(w.viewport_size().height) * 0.32).clamp(120., 320.);
+        let progress = move |y: Pixels| (-f32::from(y) / distance).clamp(0., 1.);
+        let docked = progress(scroll.offset().y);
+        let floating = 1. - docked;
+        let fill = tint.blend(Rgba {
+            a: 0.72 * docked,
+            ..rgb(0x121619)
+        });
+        let margin = (width * 0.016).clamp(7., 16.);
         // Keep the originating library highlighted as users drill into titles and their cast.
         let section = if matches!(screen, Screen::Detail(..) | Screen::Copies { .. }) {
             self.history
@@ -159,24 +184,33 @@ impl Library {
                 }),
             ));
         }
-        let inset = (width * 0.022).clamp(12., 44.);
+        let inset = (width * 0.014).clamp(6., 22.);
         let mut bar = div()
             .track_focus(&self.navigation_focus)
+            .tab_group()
             .tab_stop(false)
-            .w_full()
-            .flex_none()
+            .absolute()
+            .top(px(9. * floating))
+            .left(px(margin * floating))
+            .right(px(margin * floating))
+            .block_mouse_except_scroll()
             .h(px(NAV_HEIGHT))
             .px(px(inset))
             .flex()
             .items_center()
             .gap(px(4.))
-            .bg(rgb(0x171a20))
-            .border_b_1()
-            .border_color(rgb(0x30333a))
+            .rounded(px(15. * floating))
+            .bg(Rgba {
+                a: 0.76 + 0.22 * docked,
+                ..fill
+            })
+            .border_1()
+            .border_color(Hsla::from(fill.blend(rgba(0xffffff46))).opacity(0.64))
             .child(home.button("nav-home".into(), 112., true, cx));
         let mut overflow = Vec::new();
         // Reserve the home link, More and the three utility buttons before fitting library names.
-        let mut remaining = width - 2. * inset - 112. - 76. - 3. * 36. - 32.;
+        // Budget for the floating width even while docked to keep the shortcuts in place.
+        let mut remaining = width - 2. * (inset + margin + 1.) - 112. - 76. - 3. * 36. - 32.;
         for (i, link) in tabs.into_iter().enumerate() {
             // Keep the library names legible on small windows. The two fixed shortcuts have distinct icons.
             let show_name = width >= 900. || i >= 2;
@@ -272,6 +306,19 @@ impl Library {
         ] {
             bar = bar.child(link.button(link.glyph.into(), 36., false, cx));
         }
-        bar
+        // Programmatic keyboard/Back scrolls can settle in prepaint, after render read the handle.
+        bar.child(
+            canvas(
+                move |_, w, _| {
+                    let actual = progress(scroll.offset().y);
+                    if (actual - docked).abs() > 0.001 {
+                        w.request_animation_frame();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size(px(1.)),
+        )
     }
 }

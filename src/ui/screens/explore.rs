@@ -68,6 +68,7 @@ impl Library {
     pub(super) fn explore_view(&self, cx: &mut Context<Self>) -> Div {
         let mut body = div()
             .id("explore-scroll")
+            .track_scroll(&self.state.scroll)
             .size_full()
             .overflow_y_scroll()
             .p_5()

@@ -31,6 +31,9 @@ const ACTIVE: u32 = 0x2d2f35;
 const TEXT: u32 = 0xededed;
 const MUTED: u32 = 0xa0a1a6;
 const NAV_HEIGHT: f32 = 48.;
+// Space for the floating bar and its top and bottom gutters.
+const NAV_CLEARANCE: f32 = NAV_HEIGHT + 18.;
+const POSTER_LIFT: f32 = 3.;
 const PAD: f32 = 16.;
 const LIME: u32 = 0xdafe67;
 
@@ -45,6 +48,23 @@ const REFRESH: &str = "\u{e72c}";
 const FILTER: &str = "\u{e71c}";
 const SORT: &str = "\u{e8cb}";
 const VIDEO: &str = "\u{e714}";
+
+impl ViewState {
+    pub(super) fn reveal_row(&self, index: usize) {
+        if matches!(self.screen, Screen::Detail(..) | Screen::Discover)
+            && let Some(row) = self.scroll.bounds_for_item(index)
+        {
+            let top = self.scroll.bounds().top() + px(NAV_HEIGHT);
+            let offset = self.scroll.offset();
+            if row.top() + offset.y < top {
+                self.scroll
+                    .set_offset(point(offset.x, (top - row.top()).min(px(0.))));
+                return;
+            }
+        }
+        self.scroll.scroll_to_item(index);
+    }
+}
 
 fn icon(code: &'static str, size: f32) -> Div {
     div()
@@ -399,6 +419,21 @@ impl Library {
                 label(secondary, 11., MUTED).line_height(px(12.)),
             ),
         };
+        let face = div()
+            .relative()
+            .child(picture)
+            .child(name.mt(px(if shelf { 7. } else { 4. })))
+            .child(detail.truncate());
+        let face = if selected {
+            face.with_animation(
+                "poster-focus-lift",
+                Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
+                |d, t| d.top(px(-POSTER_LIFT * t)),
+            )
+            .into_any_element()
+        } else {
+            face.into_any_element()
+        };
         div()
             .id(id)
             .group("media-card")
@@ -406,9 +441,8 @@ impl Library {
             .min_w_0()
             .flex_none()
             .cursor_pointer()
-            .child(picture)
-            .child(name.mt(px(if shelf { 7. } else { 4. })))
-            .child(detail.truncate())
+            .pt(px(POSTER_LIFT))
+            .child(face)
             .on_click(cx.listener(move |s, _, w, cx| match layout {
                 CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
                 CardLayout::Catalog { .. } => s.open_item(target.clone(), w, cx),
@@ -549,7 +583,7 @@ impl Library {
                         CardLayout::Catalog {
                             poster: layout.poster,
                         },
-                        self.keyboard && self.state.selection == index,
+                        self.keyboard && self.focus.is_focused(w) && self.state.selection == index,
                         ("poster", index).into(),
                         cx,
                     ));
@@ -812,7 +846,7 @@ impl Library {
     }
 
     fn basic_detail_header(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
-        let height = (f32::from(w.viewport_size().height) * 0.62).clamp(265., 560.);
+        let height = NAV_CLEARANCE + (f32::from(w.viewport_size().height) * 0.62).clamp(265., 560.);
         let mut details = div()
             .absolute()
             .left(px(20.))
@@ -879,7 +913,7 @@ impl Library {
                 .child(self.backdrop(item))
                 .child(details)
                 .child(
-                    div().absolute().left(px(16.)).top(px(12.)).child(
+                    div().absolute().left(px(16.)).top(px(NAV_CLEARANCE)).child(
                         glyph_button("Back", BACK)
                             .bg(rgba(0x11121699))
                             .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
@@ -1374,6 +1408,7 @@ impl Render for Library {
         let return_opacity = self.return_opacity(w, cx);
         let root = div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(rgb(BG))
@@ -1424,17 +1459,24 @@ impl Render for Library {
                 Screen::Downloads => self.download_view(cx),
             }
         };
-        root.when(self.server.is_some(), |d| {
-            d.child(self.top_navigation(w, cx))
-        })
-        .child(
+        let hero = matches!(self.state.screen, Screen::Detail(..))
+            || matches!(self.state.screen, Screen::Discover)
+                && self.featured.get(self.hero).is_some();
+        root.child(
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
+                .when(self.server.is_some(), |d| {
+                    d.tab_index(1).tab_group().tab_stop(false)
+                })
+                .when(self.server.is_some() && !hero, |d| d.pt(px(NAV_CLEARANCE)))
                 .opacity(return_opacity)
                 .child(content),
         )
+        .when(self.server.is_some(), |d| {
+            d.child(self.top_navigation(w, cx))
+        })
         .when_some(self.player.as_ref().filter(|p| p.audio_only), |r, p| {
             r.child(self.mini_player(p, cx))
         })

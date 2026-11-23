@@ -175,19 +175,23 @@ impl Library {
         let hero = div()
             .relative()
             .w_full()
-            .h(px(height))
+            .h(px(height + NAV_HEIGHT))
             .overflow_hidden()
             .bg(rgb(0x101413))
-            .child(self.marquee_backdrop(item, w, size(px(width), px(height))))
+            .child(self.marquee_backdrop(item, w, size(px(width), px(height + NAV_HEIGHT))))
             .child(coat(90., 0x080a0cce, 0x080a0c00, 0., 0.73))
             .child(coat(180., 0x0e0f1200, 0x0e0f12ff, 0.34, 1.))
             .child(copy)
             .child(
-                div().absolute().left(px(inset)).top(px(12.)).child(
-                    glyph_button("Back", BACK)
-                        .bg(rgba(0x111216b0))
-                        .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
-                ),
+                div()
+                    .absolute()
+                    .left(px(inset))
+                    .top(px(NAV_CLEARANCE))
+                    .child(
+                        glyph_button("Back", BACK)
+                            .bg(rgba(0x111216b0))
+                            .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
+                    ),
             );
         let mut head = div().child(hero);
         match self.state.detail_panel {
@@ -470,7 +474,7 @@ impl Library {
                     .is_some_and(|p| !p.items.is_empty())
                 {
                     self.state.series_focus = SeriesFocus::Episodes;
-                    self.state.scroll.scroll_to_item(self.state.selection + 1);
+                    self.state.reveal_row(self.state.selection + 1);
                 }
             }
             (SeriesFocus::Hero, "up" | "left" | "right") => {}

@@ -8,6 +8,7 @@ mod editor;
 mod explore;
 mod formats;
 mod gamepad;
+mod glass;
 mod services;
 mod trickplay;
 use downloads::Downloads;
@@ -181,6 +182,7 @@ pub struct Library {
     artwork: Artwork,
     formats: formats::CardFormats,
     navigation_focus: FocusHandle,
+    navigation_tint: glass::NavigationTint,
     menu_focus: playback::MenuFocus,
     filters_open: bool,
     people_search: bool,
@@ -286,6 +288,7 @@ impl Library {
             artwork: Artwork::default(),
             formats: Default::default(),
             navigation_focus: cx.focus_handle(),
+            navigation_tint: Default::default(),
             menu_focus: playback::MenuFocus::new(cx),
             filters_open: false,
             people_search: false,
@@ -1402,7 +1405,7 @@ impl Library {
     fn change_shelf(&mut self, next: usize, cx: &mut Context<Self>) {
         self.state.shelf = Some(next);
         self.state.selection = 0;
-        self.state.scroll.scroll_to_item(next + 1);
+        self.state.reveal_row(next + 1);
         self.shelf_scroll[next].set_offset(Point::default());
         cx.notify();
     }
@@ -1687,8 +1690,7 @@ impl Library {
                     };
                     let shift = usize::from(matches!(self.state.screen, Screen::Detail(..)));
                     self.state
-                        .scroll
-                        .scroll_to_item(self.state.selection / columns + shift);
+                        .reveal_row(self.state.selection / columns + shift);
                 }
                 _ => return,
             }

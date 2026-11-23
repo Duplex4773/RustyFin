@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Moved navigation to a fixed top bar with Favourites, Collections and server library shortcuts. Additional destinations are available in More.
+- Navigation floats over featured artwork and picks up its colour. Scrolling docks the bar at the top and makes it more opaque. Favourites, Collections and server library shortcuts are available directly, with additional destinations in More.
+- Focused posters lift slightly when browsing shelves, search results, libraries and related titles with a keyboard or controller.
 - Added a More like this poster shelf to movie, series and episode details, using Jellyfin’s recommendations.
 - Series details now lead with the episode to resume or play next, including its still, remaining time and progress. Press Enter to play it, or use the arrow keys to browse seasons and episodes.
 - Movie details show the selected edition and its media formats beside Play. Open **More** for downloads, watched status, tracks and editing. Cast portraits and trailer stills appear when Jellyfin provides them.
