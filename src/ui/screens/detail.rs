@@ -67,9 +67,18 @@ impl Library {
         } else if let Some(ticks) = item.run_time_ticks.filter(|t| *t > 0) {
             meta.push(format!("{} min", ticks.div_ceil(600_000_000)));
         }
-        if let Some(score) = item.community_rating.filter(|s| *s > 0.) {
-            meta.push(format!("★ {score:.1}"));
-        }
+        let mut scores = score_badges(item, self.imdb_score()).peekable();
+        let metadata = (!meta.is_empty() || scores.peek().is_some()).then(|| {
+            div()
+                .max_w_full()
+                .flex()
+                .items_center()
+                .gap_2()
+                .when(!meta.is_empty(), |d| {
+                    d.child(label(meta.join("   ·   "), 14., TEXT).min_w_0().truncate())
+                })
+                .children(scores)
+        });
 
         let mut actions = div().flex().items_center().flex_wrap().gap_2();
         if let Some(ep) = target.filter(|_| is_series) {
@@ -153,9 +162,7 @@ impl Library {
                 (width * 0.4).clamp(210., 470.),
                 (height * 0.22).clamp(50., 145.),
             ))
-            .when(!meta.is_empty(), |d| {
-                d.child(label(meta.join("   ·   "), 14., TEXT).line_clamp(1))
-            })
+            .children(metadata)
             .when(
                 !overview.is_empty() && self.state.detail_panel != Some(DetailPanel::More),
                 |d| {

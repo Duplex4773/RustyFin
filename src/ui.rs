@@ -1205,7 +1205,7 @@ impl Library {
                 }
                 self.controls.animate_chrome = scrolling::animations_enabled();
                 self.controls.volume_hovered = false;
-                if !self.controls.captions.is_empty() {
+                if !player.mpv() && !self.controls.captions.is_empty() {
                     player.caption_height = (self.prefs.subtitle_size as f32 * 1.7 + 12.).max(52.);
                 }
                 self.player = Some(player);
@@ -1258,11 +1258,12 @@ impl Library {
                                 this.controls.warning = warning;
                             }
                             if this.controls.profile_notice.is_none()
-                                && let Some(message) = request.route.startup_notice()
-                                && previous.ready
+                                && let Some(message) = player.route_notice
                                 && player.status.ready
-                                && !player.status.paused
-                                && player.status.position > previous.position
+                                && (matches!(request.route, crate::jellyfin::Route::Sdr { .. })
+                                    || (previous.ready
+                                        && !player.status.paused
+                                        && player.status.position > previous.position))
                             {
                                 this.controls.profile_notice = Some((message, Instant::now()));
                             }
@@ -1362,13 +1363,41 @@ impl Library {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if request.route == Route::Mel81
+        if let Some(route) = request.route.profile7_fallback() {
+            let mut retry = request.clone();
+            retry.route = route;
+            if let Some(output) = crate::player::sdr_output(window) {
+                retry.tone_map_to_sdr(output.hdr_available);
+            }
+            self.controls.warning.clear();
+            if let Err(e) = self.start_player(retry, window, cx) {
+                self.message = format!("{e:#}");
+            } else if let Some(p) = &self.player {
+                let _ = p.speed(self.controls.speed);
+                let _ = p.zoom(self.controls.zoom);
+                let _ = p.audio_delay(self.controls.delay);
+                let _ = p.subtitle_delay(self.controls.subtitle_delay);
+            }
+        } else if request.route.native_profile().is_some()
+            && let Some(output) = error.downcast_ref::<crate::player::SdrOutput>()
+        {
+            let mut retry = request.clone();
+            retry.tone_map_to_sdr(output.hdr_available);
+            self.controls.captions = Default::default();
+            self.controls.warning.clear();
+            if let Err(e) = self.start_player(retry, window, cx) {
+                self.message = format!("{e:#}");
+            }
+        } else if request.route == Route::Mel81
             && error
                 .downcast_ref::<crate::player::LayerError>()
                 .is_some_and(|e| e.is_fel())
         {
             let mut retry = request.clone();
-            retry.route = Route::FelHdr10;
+            retry.route = Route::MpvProfile7 { fel: true };
+            if let Some(output) = crate::player::sdr_output(window) {
+                retry.tone_map_to_sdr(output.hdr_available);
+            }
             self.controls.captions = Default::default();
             self.controls.warning.clear();
             if let Err(e) = self.start_player(retry, window, cx) {

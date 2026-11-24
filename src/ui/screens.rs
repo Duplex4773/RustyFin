@@ -259,36 +259,64 @@ fn poster_years(item: &Item) -> String {
     start.to_string()
 }
 
-fn poster_scores(item: &Item) -> Div {
-    let mut scores = div()
-        .absolute()
-        .bottom(px(5.))
-        .right(px(5.))
+fn score_badge(name: &'static str) -> Stateful<Div> {
+    div()
+        .id(name)
         .flex()
-        .flex_col()
-        .items_end()
-        .gap(px(2.));
-    let critic = item
-        .critic_rating
-        .filter(|r| (0.0..=100.0).contains(r))
-        .map(|r| (format!("{r:.0}%"), 0xe8eee8, "Critic rating"));
-    let community = item
-        .community_rating
-        .filter(|&r| r > 0. && r <= 10.)
-        .map(|r| (format!("★ {r:.1}"), 0xffd35a, "Community rating"));
-    for (value, colour, name) in [critic, community].into_iter().flatten() {
-        scores = scores.child(
-            label(value, 11., colour)
-                .id(name)
-                .line_height(px(15.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .rounded(px(4.))
-                .px(px(5.))
-                .bg(rgba(0x080a0de6))
-                .tooltip(move |w, cx| Tooltip::new(name).build(w, cx)),
-        );
-    }
-    scores
+        .items_center()
+        .flex_none()
+        .gap_1()
+        .h(px(20.))
+        .px(px(5.))
+        .rounded(px(4.))
+        .bg(rgba(0x080a0de6))
+        .font_weight(FontWeight::SEMIBOLD)
+        .tooltip(move |w, cx| Tooltip::new(name).build(w, cx))
+}
+
+fn score_badges(item: &Item, imdb: Option<f64>) -> impl Iterator<Item = Stateful<Div>> {
+    // Jellyfin uses these fields for several metadata providers and omits the source.
+    let critic = item.critic_rating.filter(|r| (0.0..=100.0).contains(r));
+    let community = item.community_rating.filter(|&r| r > 0. && r <= 10.);
+    let critic = critic.map(|score| {
+        score_badge("Critic rating")
+            .child(
+                svg()
+                    .path("icons/tomato.svg")
+                    .size(px(12.))
+                    .flex_none()
+                    .text_color(rgb(0xff6a57)),
+            )
+            .child(label(format!("{score:.0}%"), 11., TEXT))
+    });
+    let audience = if let Some(score) = imdb {
+        Some(
+            score_badge("IMDb rating")
+                .child(label("IMDb", 11., 0xffd35a))
+                .child(label(format!("{score:.1}"), 11., TEXT)),
+        )
+    } else {
+        community.map(|score| {
+            score_badge("Community rating").child(label(format!("★ {score:.1}"), 11., 0xffd35a))
+        })
+    };
+    [critic, audience].into_iter().flatten()
+}
+
+fn poster_scores(item: &Item, bottom: f32) -> Option<Div> {
+    let mut badges = score_badges(item, None).peekable();
+    badges.peek()?;
+    Some(
+        div()
+            .absolute()
+            .bottom(px(bottom))
+            .right(px(5.))
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(2.))
+            .children(badges),
+    )
 }
 
 fn card_frame(face: Div, width: f32, selected: bool, id: ElementId) -> Stateful<Div> {
@@ -314,6 +342,16 @@ fn card_frame(face: Div, width: f32, selected: bool, id: ElementId) -> Stateful<
 }
 
 impl Library {
+    fn imdb_score(&self) -> Option<f64> {
+        self.state
+            .ratings
+            .as_ref()?
+            .as_ref()
+            .ok()?
+            .iter()
+            .find_map(crate::services::Rating::imdb_score)
+    }
+
     fn card(
         &self,
         item: &Item,
@@ -441,8 +479,8 @@ impl Library {
             .as_ref()
             .and_then(|data| data.unplayed_item_count)
             .filter(|&count| count > 0 && recent && item.kind == "Series");
-        if recent {
-            picture = picture.child(poster_scores(item));
+        if recent && let Some(scores) = poster_scores(item, 5.) {
+            picture = picture.child(scores);
         }
         if let Some(count) = unplayed {
             let value = if count > 99 {
@@ -710,7 +748,6 @@ impl Library {
             item.run_time_ticks
                 .filter(|t| *t >= 600_000_000)
                 .map(|t| format!("{} min", t / 600_000_000)),
-            item.community_rating.map(|r| format!("★ {r:.1}")),
         ]
         .into_iter()
         .flatten()
@@ -723,6 +760,7 @@ impl Library {
                     .py_1(),
             );
         }
+        tags = tags.children(score_badges(item, self.imdb_score()));
         for badge in item.badges() {
             tags = tags.child(label(badge, 13., TEXT).px_2().bg(rgb(SURFACE)).rounded_md());
         }
@@ -960,27 +998,33 @@ impl Library {
         }
         if let Some(result) = &self.state.ratings {
             match result {
-                Ok(scores) if !scores.is_empty() => {
-                    let mut group = div()
-                        .px_5()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_3()
-                        .child(title("Ratings", 17.));
-                    for score in scores {
-                        let value = score
-                            .score
-                            .map(|n| format!("{n:.0}%"))
-                            .or_else(|| score.value.map(|n| n.to_string()))
-                            .unwrap_or_default();
-                        group = group.child(label(format!("{}  {value}", score.source), 14., TEXT));
-                    }
-                    if item.kind == "Series" {
-                        supplements = supplements.child(group);
-                    } else {
-                        head = head.child(group);
+                Ok(scores) => {
+                    let mut additional = scores
+                        .iter()
+                        .filter(|score| score.imdb_score().is_none())
+                        .peekable();
+                    if additional.peek().is_some() {
+                        let group = div()
+                            .px_5()
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap_3()
+                            .child(title("Ratings", 17.))
+                            .children(additional.map(|score| {
+                                let value = score
+                                    .score
+                                    .map(|n| format!("{n:.0}%"))
+                                    .or_else(|| score.value.map(|n| n.to_string()))
+                                    .unwrap_or_default();
+                                label(format!("{}  {value}", score.source), 14., TEXT)
+                            }));
+                        if item.kind == "Series" {
+                            supplements = supplements.child(group);
+                        } else {
+                            head = head.child(group);
+                        }
                     }
                 }
                 Err(e) => {
@@ -991,7 +1035,6 @@ impl Library {
                         head = head.child(message);
                     }
                 }
-                _ => {}
             }
         }
         if item.kind == "Series" {

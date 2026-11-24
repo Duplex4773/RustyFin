@@ -114,7 +114,7 @@ impl Library {
         {
             streams = streams.child(label(path.clone(), 13., MUTED));
         }
-        let native = source.known_native_dolby();
+        let native = self.prefs.windows_dolby && source.known_native_dolby();
         for (i, track) in source.media_streams.iter().flatten().enumerate() {
             let text = track.label();
             streams = streams.child(label(format!("{}   {}", track.kind, text), 13., MUTED));
@@ -323,7 +323,7 @@ impl Library {
         use super::settings::{group, rows, toggle};
         use crate::preferences::Preferences;
         type Flag = fn(&mut Preferences) -> &mut bool;
-        let flags: [(_, _, _, _, Flag); 5] = [
+        let flags: [(_, _, _, _, Flag); 6] = [
             (
                 PLAY,
                 "Play next episode",
@@ -354,8 +354,15 @@ impl Library {
             ),
             (
                 VIDEO,
-                "Play Dolby Vision Profile 7 MEL as Profile 8.1",
-                "Turn off to play the HDR10 base layer",
+                "Use Windows Dolby Vision output",
+                "Use the Windows renderer for compatible profiles in HDR. Profile 7 FEL uses mpv.",
+                self.prefs.windows_dolby,
+                |p| &mut p.windows_dolby,
+            ),
+            (
+                VIDEO,
+                "Use Dolby Vision metadata for Profile 7 MEL",
+                "The Windows renderer converts MEL to Profile 8.1. Turn off to use the HDR10 base layer.",
                 self.prefs.mel_to_81,
                 |p| &mut p.mel_to_81,
             ),

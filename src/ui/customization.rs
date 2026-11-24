@@ -182,13 +182,14 @@ mod tests {
     fn older_settings_fill_defaults_and_ambiguous_shortcuts_are_rejected() {
         let mut settings: Preferences = serde_json::from_str(r#"{"rotate":false}"#).unwrap();
         assert!(!settings.rotate && settings.autoplay && settings.passthrough);
-        assert!(settings.mel_to_81);
+        assert!(settings.mel_to_81 && settings.windows_dolby);
         assert_eq!(settings.poster_size, crate::preferences::PosterSize::Medium);
         settings.poster_size = crate::preferences::PosterSize::Large;
         settings.mel_to_81 = false;
+        settings.windows_dolby = false;
         let saved: Preferences =
             serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
-        assert!(!saved.mel_to_81);
+        assert!(!saved.mel_to_81 && !saved.windows_dolby);
         assert_eq!(saved.poster_size, crate::preferences::PosterSize::Large);
         assert!(settings.validate().is_ok());
         settings.shortcuts.insert("pause".into(), "left".into());

@@ -257,6 +257,9 @@ impl Library {
                     .child(icon("\u{e73e}", 11.)),
             );
         }
+        if let Some(scores) = poster_scores(item, if progress > 0. { 11. } else { 5. }) {
+            overlay = overlay.child(scores);
+        }
         let mut face = div()
             .relative()
             .w_full()

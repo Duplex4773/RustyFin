@@ -1,8 +1,23 @@
 # Changelog
 
-Entries are grouped by development build, newest first. The three November 24 player builds were verified locally and published together. Earlier entries give the corresponding Git commit.
+Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
-## 2026-11-24 - Player UI builds
+## 2026-11-24 - Profile 7 FEL playback and Windows Dolby Vision
+
+- RustyFin uses mpv to reconstruct Profile 7 FEL from both video layers. If reconstruction fails, playback resumes at the same position using the HDR10 base layer. Both paths support SDR tone mapping.
+- **Use Windows Dolby Vision output** in **Settings → Video playback** is enabled by default for compatible Dolby Vision profiles. Turn it off to use mpv for those profiles as well. Profile 7 FEL uses mpv in either setting.
+
+## 2026-11-24 - SDR tone mapping
+
+- HDR and supported Dolby Vision sources play with mpv tone mapping when Windows reports SDR on the playback display. Native Dolby Vision playback resumes through mpv if the display switches to SDR.
+- A brief player notice confirms SDR tone mapping and points to Windows HDR settings when the display supports HDR.
+
+## 2026-11-24 - Poster and title ratings
+
+- Discover and Browse posters and title details show Jellyfin's critic percentage with a tomato icon. This includes Rotten Tomatoes scores supplied by Jellyfin and works without an MDBList key.
+- Jellyfin's community score uses a star. Title details show a labelled IMDb score when the optional MDBList integration identifies the source as IMDb.
+
+## 2026-11-24 - Player UI builds (`0c2c47b`)
 
 ### Episode previews and performance overlay
 

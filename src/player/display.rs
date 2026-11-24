@@ -142,7 +142,8 @@ fn display_path(hwnd: HWND) -> Result<windows::Devices::Display::Core::DisplayPa
 
 pub fn check(hwnd: HWND) -> Result<&'static str> {
     let path = display_path(hwnd)?;
-    let monitor = path.Target()?.TryGetMonitor()?;
+    let target = path.Target()?;
+    let monitor = target.TryGetMonitor()?;
     let wire = path.WireFormat()?;
     let mode = wire.HdrMetadata()?;
     // Some monitors explicitly designate active PQ HDR as a special
@@ -152,17 +153,16 @@ pub fn check(hwnd: HWND) -> Result<&'static str> {
     if let Some(label) = output_mode(mode, eotf, special) {
         return Ok(label);
     }
+    let color = advanced_color(&target).ok();
+    if let Some(output) = sdr_mode(Some((mode, eotf)), color.as_ref(), special) {
+        return Err(output.into());
+    }
     let transfer = match eotf {
         DisplayWireFormatEotf::Sdr => "SDR".to_owned(),
         DisplayWireFormatEotf::HdrSmpte2084 => "PQ HDR".to_owned(),
         other => format!("transfer function {}", other.0),
     };
-    let settings = path
-        .Target()
-        .ok()
-        .and_then(|t| advanced_color(&t).ok())
-        .map(|info| color_settings(&info))
-        .unwrap_or_default();
+    let settings = color.as_ref().map(color_settings).unwrap_or_default();
     anyhow::bail!(
         "Windows reports {transfer} and {} for {}. {settings} Dolby Vision in HDR mode support is {special}.",
         match mode {
@@ -172,6 +172,54 @@ pub fn check(hwnd: HWND) -> Result<&'static str> {
         },
         monitor.DisplayName()?
     );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SdrOutput {
+    pub hdr_available: bool,
+}
+
+impl std::fmt::Display for SdrOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The playback display is in SDR.")
+    }
+}
+impl std::error::Error for SdrOutput {}
+
+fn sdr_mode(
+    wire: Option<(DisplayWireFormatHdrMetadata, DisplayWireFormatEotf)>,
+    color: Option<&AdvancedColorInfo>,
+    dolby_in_hdr: bool,
+) -> Option<SdrOutput> {
+    let sdr = match wire {
+        Some((DisplayWireFormatHdrMetadata::DolbyVisionLowLatency, _)) => false,
+        Some((_, eotf)) => eotf == DisplayWireFormatEotf::Sdr,
+        None => color.is_some_and(|info| matches!(info.active_mode, 0 | 1)),
+    };
+    sdr.then(|| SdrOutput {
+        hdr_available: dolby_in_hdr || color.is_some_and(|info| info.hdr_supported()),
+    })
+}
+
+pub(super) fn sdr_output(hwnd: HWND) -> Option<SdrOutput> {
+    let path = display_path(hwnd).ok()?;
+    let target = path.Target().ok()?;
+    let wire = path
+        .WireFormat()
+        .and_then(|wire| Ok((wire.HdrMetadata()?, wire.Eotf()?)))
+        .ok();
+    let color = advanced_color(&target).ok();
+    let dolby_in_hdr = target
+        .TryGetMonitor()
+        .and_then(|m| m.IsDolbyVisionSupportedInHdrMode())
+        .unwrap_or(false);
+    sdr_mode(wire, color.as_ref(), dolby_in_hdr)
+}
+
+impl AdvancedColorInfo {
+    fn hdr_supported(&self) -> bool {
+        self.flags & (1 << 4) != 0
+    }
 }
 
 pub struct HdrSettings {
@@ -188,7 +236,7 @@ impl HdrSettings {
         Ok(Self {
             name: target.TryGetMonitor()?.DisplayName()?.to_string(),
             enabled: info.flags & (1 << 5) != 0,
-            supported: info.flags & (1 << 4) != 0,
+            supported: info.hdr_supported(),
             description: color_settings(&info),
             header: info.header,
         })
@@ -225,12 +273,37 @@ impl HdrSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayWireFormatEotf as Eotf, DisplayWireFormatHdrMetadata as Meta, output_mode};
+    use super::{
+        AdvancedColorInfo, DisplayWireFormatEotf as Eotf, DisplayWireFormatHdrMetadata as Meta,
+        SdrOutput, output_mode, sdr_mode,
+    };
     #[test]
     fn distinguishes_dolby_in_hdr_from_ordinary_hdr10() {
         assert!(output_mode(Meta::Hdr10, Eotf::HdrSmpte2084, true).is_some());
         assert!(output_mode(Meta::Hdr10, Eotf::HdrSmpte2084, false).is_none());
         assert!(output_mode(Meta::None, Eotf::Sdr, true).is_none());
         assert!(output_mode(Meta::DolbyVisionLowLatency, Eotf::HdrSmpte2084, false).is_some());
+    }
+
+    #[test]
+    fn distinguishes_sdr_output_from_hdr_support() {
+        let color = AdvancedColorInfo {
+            flags: 1 << 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            sdr_mode(Some((Meta::None, Eotf::Sdr)), Some(&color), false),
+            Some(SdrOutput {
+                hdr_available: true
+            })
+        );
+        assert_eq!(
+            sdr_mode(Some((Meta::None, Eotf::Sdr)), None, false),
+            Some(SdrOutput {
+                hdr_available: false
+            })
+        );
+        assert!(sdr_mode(Some((Meta::Hdr10, Eotf::HdrSmpte2084)), Some(&color), true).is_none());
+        assert!(sdr_mode(Some((Meta::DolbyVisionLowLatency, Eotf::Sdr)), None, true).is_none());
     }
 }

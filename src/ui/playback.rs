@@ -202,13 +202,14 @@ impl Server {
         position: Option<f64>,
         prefs: preferences::Preferences,
         selected: Option<MediaChoice>,
+        sdr: Option<crate::player::SdrOutput>,
     ) -> Result<Prepared> {
         let mut choice = match selected {
             Some(c) => c,
             None => preferences::load(&preferences::item_path(&self.profile_path()?, &item.id))?,
         };
         let mut request = self.playback(&item, &choice)?;
-        crate::player::resolve_profile7(&mut request, prefs.mel_to_81)?;
+        crate::player::prepare_route(&mut request, sdr, &prefs);
         request.allow_passthrough = prefs.passthrough;
         request.subtitle_size = prefs.subtitle_size;
         if let Some(seconds) = position {
@@ -408,10 +409,11 @@ impl Library {
         self.downloads.playing = None;
         self.reset_episode_transition();
         let prefs = self.prefs.clone();
+        let sdr = crate::player::sdr_output(w);
         self.work(
             w,
             cx,
-            move || server.prepare(item, position, prefs, None),
+            move || server.prepare(item, position, prefs, None, sdr),
             Self::play_prepared,
         );
     }
@@ -466,12 +468,13 @@ impl Library {
             return;
         };
         let prefs = self.prefs.clone();
+        let sdr = crate::player::sdr_output(w);
         let generation = self.generation;
         self.controls.warning.clear();
         self.work(
             w,
             cx,
-            move || Ok(server.prepare(item, None, prefs, None)),
+            move || Ok(server.prepare(item, None, prefs, None, sdr)),
             move |s, prepared, w, cx| {
                 if s.generation != generation {
                     return Ok(());
@@ -532,12 +535,18 @@ impl Library {
             return;
         };
         let prefs = self.prefs.clone();
+        let sdr = crate::player::sdr_output(w);
         self.work(
             w,
             cx,
             move || {
-                let mut prepared =
-                    server.prepare(retry.item, Some(retry.position), prefs, Some(retry.choice))?;
+                let mut prepared = server.prepare(
+                    retry.item,
+                    Some(retry.position),
+                    prefs,
+                    Some(retry.choice),
+                    sdr,
+                )?;
                 prepared.request.start_paused = retry.paused;
                 Ok(prepared)
             },
@@ -563,12 +572,13 @@ impl Library {
         }
         let id = item.id.clone();
         let prefs = self.prefs.clone();
+        let sdr = crate::player::sdr_output(w);
         let key = choice.clone();
         let generation = self.generation;
         self.work(
             w,
             cx,
-            move || server.prepare(item, None, prefs, Some(key)),
+            move || server.prepare(item, None, prefs, Some(key), sdr),
             move |s, mut prepared, w, cx| {
                 let Some(p) = &s.player else { return Ok(()) };
                 if s.generation != generation {

@@ -856,24 +856,34 @@ impl Library {
             }
         }
         if let Some((message, shown)) = self.controls.profile_notice
-            && shown.elapsed() < Duration::from_secs(3)
+            && shown.elapsed() < Duration::from_secs(5)
         {
+            let (title_text, detail) = message
+                .split_once('\n')
+                .map_or((message, None), |(name, detail)| (name, Some(detail)));
             let bounds = Bounds::new(
                 point(
                     px(rail(width).0),
                     px(if show_bar && !p.audio_only { 85. } else { EDGE }),
                 ),
-                size(px((width - 2. * EDGE).clamp(1., 290.)), px(38.)),
+                size(
+                    px((width - 2. * EDGE).clamp(1., if detail.is_some() { 360. } else { 290. })),
+                    px(if detail.is_some() { 58. } else { 38. }),
+                ),
             );
             root = root.child(
                 floating(bounds)
                     .rounded(px(8.))
-                    .bg(rgb(PANEL))
+                    .bg(rgba(0x11161bef))
                     .flex()
-                    .items_center()
+                    .flex_col()
                     .justify_center()
+                    .px_3()
                     .overflow_hidden()
-                    .child(label(message, 14., TEXT)),
+                    .child(title(title_text, 14.).line_clamp(1))
+                    .when_some(detail, |d, text| {
+                        d.child(label(text, 12., 0xc8cdce).mt(px(2.)).line_clamp(2))
+                    }),
             );
         }
         if p.performance.enabled {

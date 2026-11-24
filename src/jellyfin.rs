@@ -259,12 +259,28 @@ pub struct Stream {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Route {
     Mpv,
+    MpvDolby,
+    MpvProfile7 {
+        fel: bool,
+    },
     Dolby(String),
     #[serde(alias = "DolbyMel81")]
     Profile7,
     Mel81,
     FelHdr10,
     MelHdr10,
+    Sdr {
+        source: HdrSource,
+        hdr_available: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HdrSource {
+    Hdr,
+    DolbyVision,
+    Profile7 { fel: bool },
+    Profile7Base,
 }
 
 impl Route {
@@ -272,17 +288,75 @@ impl Route {
         match self {
             Self::Mel81 => Some("Dolby Vision · Profile 7 MEL → 8.1"),
             Self::MelHdr10 => Some("Profile 7 MEL · Playing HDR10"),
-            Self::FelHdr10 => Some("Profile 7 FEL · Playing HDR10 fallback"),
+            Self::MpvProfile7 { fel: true } => Some("Dolby Vision Profile 7 · FEL reconstruction"),
+            Self::FelHdr10 => Some("Profile 7 · HDR10 base layer fallback"),
+            Self::Sdr {
+                source,
+                hdr_available,
+            } => Some(match (source, hdr_available) {
+                (HdrSource::Hdr, false) => "HDR video tone-mapped to SDR",
+                (HdrSource::Hdr, true) => {
+                    "HDR video tone-mapped to SDR\nHDR is available for this display in Windows Settings."
+                }
+                (HdrSource::Profile7Base, false) => {
+                    "Profile 7 · HDR10 base layer tone-mapped to SDR"
+                }
+                (HdrSource::Profile7Base, true) => {
+                    "Profile 7 · HDR10 base layer tone-mapped to SDR\nHDR is available for this display in Windows Settings."
+                }
+                (HdrSource::Profile7 { fel: true }, false) => "Profile 7 FEL · Tone-mapped to SDR",
+                (HdrSource::Profile7 { fel: true }, true) => {
+                    "Profile 7 FEL · Tone-mapped to SDR\nHDR is available for this display in Windows Settings."
+                }
+                (_, false) => "Dolby Vision video tone-mapped to SDR",
+                (_, true) => {
+                    "Dolby Vision video tone-mapped to SDR\nHDR is available for this display in Windows Settings."
+                }
+            }),
             _ => None,
         }
     }
 
     pub fn native_profile(&self) -> Option<&str> {
         match self {
-            Self::Mpv | Self::FelHdr10 | Self::MelHdr10 | Self::Profile7 => None,
             Self::Dolby(profile) => Some(profile),
             Self::Mel81 => Some("dvhe.08"),
+            _ => None,
         }
+    }
+
+    pub fn mpv_profile7(&self) -> Option<bool> {
+        match self {
+            Self::MpvProfile7 { fel }
+            | Self::Sdr {
+                source: HdrSource::Profile7 { fel },
+                ..
+            } => Some(*fel),
+            _ => None,
+        }
+    }
+
+    pub fn hdr10_base_layer(&self) -> bool {
+        matches!(
+            self,
+            Self::FelHdr10
+                | Self::MelHdr10
+                | Self::Sdr {
+                    source: HdrSource::Profile7Base,
+                    ..
+                }
+        )
+    }
+
+    pub fn profile7_fallback(&self) -> Option<Self> {
+        self.mpv_profile7()?;
+        Some(match self {
+            Self::Sdr { hdr_available, .. } => Self::Sdr {
+                source: HdrSource::Profile7Base,
+                hdr_available: *hdr_available,
+            },
+            _ => Self::FelHdr10,
+        })
     }
 }
 
@@ -371,6 +445,23 @@ pub struct PlayRequest {
     pub frame_rate: Option<f64>,
     pub seekable: bool,
     pub _live: Option<std::sync::Arc<live::LiveStream>>,
+}
+
+impl PlayRequest {
+    pub fn tone_map_to_sdr(&mut self, hdr_available: bool) {
+        let source = match self.route {
+            Route::Dolby(_) | Route::MpvDolby => HdrSource::DolbyVision,
+            Route::MpvProfile7 { fel } => HdrSource::Profile7 { fel },
+            Route::Profile7 | Route::Mel81 => HdrSource::Profile7 { fel: false },
+            Route::FelHdr10 | Route::MelHdr10 => HdrSource::Profile7Base,
+            Route::Mpv if !self.audio_only && self.source.has_hdr_video() => HdrSource::Hdr,
+            Route::Mpv | Route::Sdr { .. } => return,
+        };
+        self.route = Route::Sdr {
+            source,
+            hdr_available,
+        };
+    }
 }
 
 impl Server {
@@ -912,6 +1003,28 @@ mod tests {
             Route::Dolby("dvhe.05".into())
         );
     }
+    #[test]
+    fn profile_7_fallback_keeps_sdr_output_and_stops_retrying() {
+        let fel = Route::MpvProfile7 { fel: true };
+        assert_eq!(fel.profile7_fallback(), Some(Route::FelHdr10));
+        assert_eq!(Route::FelHdr10.profile7_fallback(), None);
+        let sdr = Route::Sdr {
+            source: HdrSource::Profile7 { fel: true },
+            hdr_available: true,
+        };
+        let fallback = sdr.profile7_fallback().unwrap();
+        assert_eq!(
+            fallback,
+            Route::Sdr {
+                source: HdrSource::Profile7Base,
+                hdr_available: true,
+            }
+        );
+        assert!(fallback.hdr10_base_layer());
+        assert_eq!(fallback.profile7_fallback(), None);
+        assert_eq!(Route::MpvDolby.profile7_fallback(), None);
+    }
+
     #[test]
     fn profile_7_requires_hevc_and_defers_layer_selection_to_the_player() {
         let candidate = |codec: &str, el: i32| {

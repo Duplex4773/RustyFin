@@ -97,6 +97,15 @@ const FORMAT_NODE: c_int = 6;
 const FORMAT_NODE_ARRAY: c_int = 7;
 const FORMAT_NODE_MAP: c_int = 8;
 const SHADER_PROBE_REPLY: u64 = 1;
+const FEL_PROBE_REPLY: u64 = 2;
+
+#[derive(Default)]
+struct FelProbe {
+    checking_since: Option<Instant>,
+    last_request: Option<Instant>,
+    pending: bool,
+    confirmed: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShaderStatus {
@@ -136,6 +145,14 @@ struct RenderPass<'a> {
 }
 
 impl RenderPasses<'_> {
+    fn has_enhancement_layer(&self) -> bool {
+        self.fresh.iter().chain(&self.redraw).any(|pass| {
+            pass.desc
+                .split(", ")
+                .any(|stage| stage == "enhancement layer")
+        })
+    }
+
     fn shader_status(&self, shader: &Shader, names: &[String]) -> Option<ShaderStatus> {
         for passes in [&self.fresh, &self.redraw] {
             // The 16-feature FSRCNNX shader shares many descriptions with the
@@ -221,6 +238,8 @@ pub struct Mpv {
     shader_probe_pending: bool,
     metrics: Metrics,
     rtx: RtxVsr,
+    profile7: bool,
+    fel: Option<FelProbe>,
     selection: Option<(Option<i32>, Option<i32>, Option<url::Url>)>,
     _library: Library,
 }
@@ -286,6 +305,8 @@ impl Mpv {
                 shader_probe_pending: false,
                 metrics: Metrics::default(),
                 rtx: RtxVsr::default(),
+                profile7: request.route.mpv_profile7().is_some(),
+                fel: (request.route.mpv_profile7() == Some(true)).then(FelProbe::default),
                 selection: Some((
                     request.audio_index,
                     request.subtitle_index,
@@ -346,10 +367,8 @@ impl Mpv {
                     ))
                     .context("Setting the mpv shader cache directory")?;
                 }
-                let base_layer = matches!(
-                    request.route,
-                    crate::jellyfin::Route::FelHdr10 | crate::jellyfin::Route::MelHdr10
-                );
+                let base_layer = request.route.hdr10_base_layer();
+                let sdr = matches!(request.route, crate::jellyfin::Route::Sdr { .. });
                 // Let gpu-next negotiate the output with the display that owns wid.
                 // PQ's reference black is zero even when DXGI reports a higher floor.
                 for (key, value) in [
@@ -357,7 +376,7 @@ impl Mpv {
                     (c"gpu-shader-cache", c"yes"),
                     (
                         c"target-colorspace-hint",
-                        if base_layer { c"yes" } else { c"auto" },
+                        if base_layer || sdr { c"yes" } else { c"auto" },
                     ),
                     (c"target-contrast", c"inf"),
                     (c"tone-mapping", c"auto"),
@@ -367,13 +386,45 @@ impl Mpv {
                         .with_context(|| format!("Setting mpv option {}", key.to_string_lossy()))?;
                 }
                 if base_layer {
-                    for (key, value) in [
-                        (c"vf", c"format=dolbyvision=no"),
-                        (c"target-colorspace-hint-mode", c"source"),
-                    ] {
-                        check(set(handle.as_ptr(), key.as_ptr(), value.as_ptr()))
-                            .context("Configuring HDR10 base-layer playback")?;
+                    // Profile 7 has an HDR10-compatible base layer. Profile 5 needs
+                    // the Dolby Vision metadata for mpv to reconstruct its colors.
+                    check(set(
+                        handle.as_ptr(),
+                        c"vf".as_ptr(),
+                        c"format=dolbyvision=no:enhancement-layer=no".as_ptr(),
+                    ))
+                    .context("Configuring HDR10 base-layer playback")?;
+                    if request.route != crate::jellyfin::Route::MelHdr10 {
+                        // The default mpv video chain still opens the dependent
+                        // decoder even when the format filter drops its frames.
+                        // Select only the base video through a separate filter graph.
+                        check(set(
+                            handle.as_ptr(),
+                            c"lavfi-complex".as_ptr(),
+                            c"[vid1]null[vo]".as_ptr(),
+                        ))
+                        .context("Selecting the Profile 7 base video")?;
                     }
+                }
+                if sdr {
+                    for (key, value) in [
+                        (c"target-colorspace-hint-mode", c"target"),
+                        (c"target-trc", c"srgb"),
+                        (c"target-prim", c"bt.709"),
+                        (c"target-gamut", c"bt.709"),
+                        (c"d3d11-output-csp", c"srgb"),
+                    ] {
+                        check(set(handle.as_ptr(), key.as_ptr(), value.as_ptr())).with_context(
+                            || format!("Configuring SDR output: {}", key.to_string_lossy()),
+                        )?;
+                    }
+                } else if base_layer {
+                    check(set(
+                        handle.as_ptr(),
+                        c"target-colorspace-hint-mode".as_ptr(),
+                        c"source".as_ptr(),
+                    ))
+                    .context("Configuring HDR10 base-layer output")?;
                 }
             }
             if !matches!(settings.subtitle, SubtitleStyle::Authored) {
@@ -601,6 +652,12 @@ impl Mpv {
                     2 if !e.data.is_null() => {
                         let log = &*e.data.cast::<LogMessage>();
                         let message = std::ffi::CStr::from_ptr(log.text).to_string_lossy();
+                        if self.profile7
+                            && (message.contains("rendering base layer only")
+                                || message.contains("Failed to set up enhancement-layer pairing"))
+                        {
+                            bail!("mpv could not render the Profile 7 enhancement layer");
+                        }
                         self.rtx_log(
                             CStr::from_ptr(log.prefix).to_bytes(),
                             &message,
@@ -623,6 +680,20 @@ impl Mpv {
                         }
                     }
                     3 if e.reply == SHADER_PROBE_REPLY => self.shader_probe_reply(e),
+                    3 if e.reply == FEL_PROBE_REPLY => {
+                        if let Some(fel) = self.fel.as_mut() {
+                            fel.pending = false;
+                            if e.property_string()
+                                .and_then(|data| {
+                                    serde_json::from_slice::<RenderPasses<'_>>(data.to_bytes()).ok()
+                                })
+                                .is_some_and(|passes| passes.has_enhancement_layer())
+                            {
+                                fel.confirmed = true;
+                                fel.checking_since = None;
+                            }
+                        }
+                    }
                     3 => self.performance_reply(e),
                     7 if !e.data.is_null() => {
                         let end = &*e.data.cast::<EndFile>();
@@ -632,8 +703,38 @@ impl Mpv {
                         ended = true;
                     }
                     8 => self.loaded = true,
+                    21 => {
+                        if let Some(fel) = self.fel.as_mut() {
+                            fel.checking_since = Some(Instant::now());
+                            fel.last_request = None;
+                        }
+                    }
                     _ => {}
                 }
+            }
+        }
+        if !ended
+            && let Some(fel) = self.fel.as_mut()
+            && let Some(since) = fel.checking_since
+        {
+            ensure!(
+                since.elapsed() < Duration::from_secs(3),
+                "mpv did not render the Profile 7 enhancement layer"
+            );
+            if !fel.pending
+                && fel
+                    .last_request
+                    .is_none_or(|at| at.elapsed() >= Duration::from_millis(250))
+            {
+                fel.last_request = Some(Instant::now());
+                fel.pending = unsafe {
+                    (self.property_async)(
+                        self.handle.as_ptr(),
+                        FEL_PROBE_REPLY,
+                        c"vo-passes".as_ptr(),
+                        FORMAT_STRING,
+                    ) >= 0
+                };
             }
         }
         if self.loaded
@@ -665,7 +766,7 @@ impl Mpv {
             )
         };
         let status = Status {
-            ready: self.loaded,
+            ready: self.loaded && self.route_notice_ready(),
             position: self.number(c"time-pos"),
             duration: self.number(c"duration"),
             paused: paused != 0,
@@ -675,6 +776,10 @@ impl Mpv {
             self.probe_shader();
         }
         Ok(status)
+    }
+
+    pub(super) fn route_notice_ready(&self) -> bool {
+        self.fel.as_ref().is_none_or(|fel| fel.confirmed)
     }
 
     fn update_audio_output(&mut self) -> Result<()> {
@@ -790,6 +895,20 @@ impl Drop for Mpv {
 #[cfg(test)]
 mod tests {
     use super::{RenderPasses, Shader, ShaderStatus, stale_bitstream_input};
+
+    #[test]
+    fn dolby_reshaping_alone_does_not_confirm_fel() {
+        let fel: RenderPasses<'_> = serde_json::from_str(
+            r#"{"fresh":[{"desc":"color decoding, reshaping, enhancement layer","last":100}],"redraw":[]}"#,
+        )
+        .unwrap();
+        let base: RenderPasses<'_> = serde_json::from_str(
+            r#"{"fresh":[{"desc":"color decoding, reshaping","last":100}],"redraw":[]}"#,
+        )
+        .unwrap();
+        assert!(fel.has_enhancement_layer());
+        assert!(!base.has_enhancement_layer());
+    }
 
     #[test]
     fn verifies_only_passes_for_the_selected_shader() {

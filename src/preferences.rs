@@ -155,6 +155,7 @@ pub struct Preferences {
     pub anime_sync: bool,
     pub subtitle_size: u32,
     pub passthrough: bool,
+    pub windows_dolby: bool,
     pub mel_to_81: bool,
     pub shortcuts: std::collections::BTreeMap<String, String>,
 }
@@ -173,6 +174,7 @@ impl Default for Preferences {
             anime_sync: false,
             subtitle_size: 36,
             passthrough: true,
+            windows_dolby: true,
             mel_to_81: true,
             shortcuts: Default::default(),
         }

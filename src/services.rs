@@ -21,6 +21,44 @@ pub struct Rating {
     pub score: Option<f64>,
     pub value: Option<f64>,
 }
+impl Rating {
+    pub fn imdb_score(&self) -> Option<f64> {
+        if !self.source.eq_ignore_ascii_case("imdb") {
+            return None;
+        }
+        self.value
+            .filter(|&score| score > 0. && score <= 10.)
+            .or_else(|| {
+                self.score
+                    .filter(|&score| score > 0. && score <= 100.)
+                    .map(|score| score / 10.)
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Rating;
+
+    #[test]
+    fn imdb_score_requires_attribution_and_uses_the_ten_point_scale() {
+        let mut rating = Rating {
+            source: "tmdb".into(),
+            value: Some(8.4),
+            score: Some(84.),
+        };
+        assert_eq!(rating.imdb_score(), None);
+
+        rating.source = "IMDb".into();
+        rating.score = Some(83.);
+        assert_eq!(rating.imdb_score(), Some(8.4));
+        rating.value = None;
+        assert_eq!(rating.imdb_score(), Some(8.3));
+        rating.score = Some(101.);
+        assert_eq!(rating.imdb_score(), None);
+    }
+}
+
 impl Ratings {
     pub fn new(key: String) -> Result<Self> {
         ensure!(!key.trim().is_empty(), "Enter the MDBList API key.");

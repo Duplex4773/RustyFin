@@ -33,16 +33,20 @@ Start with **FSRCNNX 8** for live action. Try **FSRCNNX 16** on clean footage if
 | Source | Playback path |
 | --- | --- |
 | SDR, HDR10, HDR10+ or HLG | Embedded libmpv |
-| Dolby Vision | Windows Media Foundation Media Engine, the registered Dolby renderer extension, and a DirectComposition video surface |
+| Dolby Vision on a compatible HDR display | Windows Media Foundation with **Use Windows Dolby Vision output** enabled, or mpv rendering with the setting off |
+| HDR or Dolby Vision on an active SDR display | Embedded libmpv with SDR tone mapping |
 | Profile 7 MEL, with compatibility enabled | Local adaptation to Profile 8.1 and the Windows Dolby renderer |
-| Profile 7 FEL, or MEL with compatibility disabled | HDR10 base layer via embedded libmpv |
-| Unsupported Dolby profile or unverified Dolby output | Playback stops and the library shows the reason |
+| Profile 7 FEL | mpv enhancement-layer reconstruction, with HDR10 base-layer fallback |
+| Profile 7 MEL with metadata disabled | HDR10 base layer via embedded libmpv |
+| Unsupported Dolby profile or unverified Dolby output while HDR is active | Playback stops and the library shows the reason |
 
 For ordinary HDR playback, mpv negotiates the output colour space with the active display. Its video surface sits beneath a transparent GPUI control layer. An HDR10+ source can play in HDR10 on Windows. The format strip identifies the source, while the display’s signal information identifies the output.
 
-RustyFin requests the original file through Jellyfin Direct Play. For Dolby Vision, Windows provides the seekable input stream. A client-side media source demuxes it and feeds the original compressed video and timestamps to the Windows decoder and Dolby renderer. It checks the file's Dolby configuration, obtains the renderer profile and decoder attributes from the Windows MP4 demuxer using one compressed picture in memory, and verifies the selected Media Engine stream.
+When Windows reports SDR on the playback display, RustyFin uses mpv to tone-map HDR and supported Dolby Vision sources to SDR. Profile 7 FEL reconstruction works with tone mapping. A brief player notice identifies the conversion and mentions Windows HDR when the display supports it.
 
-For single-track HEVC Profile 7 remuxes, RustyFin inspects the original video’s enhancement-layer metadata before playback. MEL plays as Dolby Vision Profile 8.1 by default. Change **Settings → Video playback → Play Dolby Vision Profile 7 MEL as Profile 8.1** to use the HDR10 base layer instead. FEL always uses the HDR10 base layer. A brief player notice identifies MEL conversion or FEL fallback. RustyFin checks subsequent pictures during MEL playback and switches to HDR10 if it encounters FEL. [Dolby Vision profiles](https://ott.dolby.com/OnDelKits/Dolby_Vision_Online_Delivery_Kit/v1/Documentation/Specs/Visio_Profiles/help_files/topics/c_dovi_profiles.html) · [dovi_tool conversion modes](https://github.com/quietvoid/dovi_tool#readme)
+RustyFin requests the original file through Jellyfin Direct Play. For native Dolby Vision playback, Windows provides the seekable input stream. A client-side media source demuxes it and feeds the original compressed video and timestamps to the Windows decoder and Dolby renderer. It checks the file's Dolby configuration, obtains the renderer profile and decoder attributes from the Windows MP4 demuxer using one compressed picture in memory, and verifies the selected Media Engine stream.
+
+For single-track HEVC Profile 7 remuxes, RustyFin inspects the enhancement-layer metadata before playback. mpv reconstructs FEL by default and retries with the HDR10 base layer if reconstruction fails. Windows playback converts MEL to Profile 8.1 when **Use Windows Dolby Vision output** and **Use Dolby Vision metadata for Profile 7 MEL** are enabled. If Windows encounters FEL during that conversion, RustyFin switches to mpv at the current position. [Dolby Vision profiles](https://ott.dolby.com/OnDelKits/Dolby_Vision_Online_Delivery_Kit/v1/Documentation/Specs/Visio_Profiles/help_files/topics/c_dovi_profiles.html) · [mpv FEL support](https://github.com/mpv-player/mpv/pull/17932)
 
 Audio follows the selected Windows multimedia output. For AC-3, E-AC-3, TrueHD, DTS and DTS-HD, the Dolby Vision path checks the selected digital output for the track's encoded format and opens it in WASAPI exclusive mode. **Audio bitstream** indicates that RustyFin has reserved the output for the original encoded audio. An Atmos-capable receiver can render the objects carried in E-AC-3 or TrueHD. For headphones, speakers, an unsupported format or a busy exclusive endpoint, RustyFin decodes the selected track locally to PCM and mixes it to the available channel layout. **PCM 2 ch** indicates stereo. Conventional PCM downmixing discards Atmos object positioning. The video and audio use the original file and presentation timestamps on both paths. The ordinary mpv playback path also enables WASAPI passthrough with PCM fallback.
 

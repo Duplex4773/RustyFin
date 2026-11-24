@@ -91,6 +91,20 @@ impl Stream {
     }
 }
 impl Source {
+    pub(super) fn has_hdr_video(&self) -> bool {
+        self.media_streams.iter().flatten().any(|stream| {
+            stream.kind == "Video"
+                && !stream.is_attached_pic
+                && (stream.range().is_some_and(|range| {
+                    range.starts_with("HDR") || matches!(range.as_str(), "DV" | "HLG" | "PQ")
+                }) || stream.color_transfer.as_deref().is_some_and(|transfer| {
+                    ["smpte2084", "arib-std-b67"]
+                        .iter()
+                        .any(|known| transfer.eq_ignore_ascii_case(known))
+                }))
+        })
+    }
+
     pub fn known_native_dolby(&self) -> bool {
         self.media_streams
             .as_deref()

@@ -60,8 +60,7 @@ fn api() -> Result<&'static Api> {
     Ok(API.get().expect("media module initialized"))
 }
 
-pub(super) fn profile7_route(url: &str, mel_to_81: bool) -> Result<crate::jellyfin::Route> {
-    use crate::jellyfin::Route;
+pub(super) fn profile7_is_fel(url: &str) -> Result<bool> {
     use windows::Win32::{
         Foundation::RPC_E_CHANGED_MODE,
         System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
@@ -80,10 +79,9 @@ pub(super) fn profile7_route(url: &str, mel_to_81: bool) -> Result<crate::jellyf
         unsafe { (api.probe)(wide.as_ptr(), super::mel::packet, &mut code).ok() }
             .context("Reading the Profile 7 enhancement layer")?;
         match super::mel::LayerError::from_code(code) {
-            Some(e) if e.is_fel() => Ok(Route::FelHdr10),
+            Some(e) if e.is_fel() => Ok(true),
             Some(e) => Err(e.into()),
-            None if mel_to_81 => Ok(Route::Mel81),
-            None => Ok(Route::MelHdr10),
+            None => Ok(false),
         }
     })();
     if apartment.is_ok() {

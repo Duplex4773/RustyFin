@@ -309,7 +309,7 @@ impl Library {
         let result = d.local(profile);
         let lyrics = preferences::load(&d.dir(profile).join("lyrics.json")).unwrap_or_default();
         let result = result.and_then(|(item, mut request, vtt)| {
-            crate::player::resolve_profile7(&mut request, self.prefs.mel_to_81)?;
+            crate::player::prepare_route(&mut request, crate::player::sdr_output(w), &self.prefs);
             self.stop();
             self.controls = Default::default();
             self.controls.lyrics = lyrics;

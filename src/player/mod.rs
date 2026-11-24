@@ -1,5 +1,5 @@
 mod display;
-pub use display::HdrSettings;
+pub use display::{HdrSettings, SdrOutput};
 mod local;
 mod mel;
 pub use mel::LayerError;
@@ -88,11 +88,30 @@ mod tests {
     }
 }
 
-pub fn resolve_profile7(request: &mut PlayRequest, mel_to_81: bool) -> Result<()> {
-    if request.route == Route::Profile7 {
-        request.route = local::profile7_route(request.url.as_str(), mel_to_81)?;
+pub fn sdr_output(window: &Window) -> Option<SdrOutput> {
+    display::sdr_output(parent(window).ok()?)
+}
+
+pub fn prepare_route(
+    request: &mut PlayRequest,
+    sdr: Option<SdrOutput>,
+    prefs: &crate::preferences::Preferences,
+) {
+    match request.route {
+        Route::Profile7 => {
+            request.route = match local::profile7_is_fel(request.url.as_str()) {
+                Ok(true) => Route::MpvProfile7 { fel: true },
+                Ok(false) if !prefs.mel_to_81 => Route::MelHdr10,
+                Ok(false) if prefs.windows_dolby && sdr.is_none() => Route::Mel81,
+                Ok(false) | Err(_) => Route::MpvProfile7 { fel: false },
+            };
+        }
+        Route::Dolby(_) if !prefs.windows_dolby => request.route = Route::MpvDolby,
+        _ => {}
     }
-    Ok(())
+    if let Some(output) = sdr {
+        request.tone_map_to_sdr(output.hdr_available);
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -211,12 +230,22 @@ impl Player {
             }
         });
         let (engine, label) = match &request.route {
-            Route::Mpv | Route::FelHdr10 | Route::MelHdr10 => (
+            Route::Mpv
+            | Route::MpvDolby
+            | Route::MpvProfile7 { .. }
+            | Route::FelHdr10
+            | Route::MelHdr10
+            | Route::Sdr { .. } => (
                 Engine::Mpv(mpv::Mpv::open(surface.0, request, &prefs.mpv)?),
-                if request.route == Route::Mpv {
-                    "mpv"
-                } else {
-                    "mpv · HDR10 base layer"
+                match request.route {
+                    Route::Mpv => "mpv",
+                    Route::MpvDolby => "mpv · Dolby Vision rendering",
+                    Route::MpvProfile7 { .. } => "mpv · Profile 7 rendering",
+                    Route::Sdr { .. } if request.route.hdr10_base_layer() => {
+                        "mpv · HDR10 base layer · SDR tone mapping"
+                    }
+                    Route::Sdr { .. } => "mpv · SDR tone mapping",
+                    _ => "mpv · HDR10 base layer",
                 }
                 .into(),
             ),
@@ -357,7 +386,15 @@ impl Player {
             }
         };
         ensure!(
-            s.ready || self.opened.elapsed() < Duration::from_secs(40),
+            s.ready
+                || self.opened.elapsed()
+                    < Duration::from_secs(
+                        if matches!(&self.engine, Engine::Mpv(p) if !p.route_notice_ready()) {
+                            15
+                        } else {
+                            40
+                        }
+                    ),
             "Timed out opening the video source."
         );
         let pcm = match &self.engine {
