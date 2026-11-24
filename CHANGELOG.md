@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Leaving video playback restores the window mode used before the video started, including maximized and fullscreen browsing.
+- Temporarily disabled the ArtCNN C4F32 preset because shader compilation can stall playback. The Shaders menu shows a warning, and saved C4F32 selections use standard scaling.
+- Added RAVU Zoom AR r3, NNEDI3, and SSimSuperRes presets. The Shaders menu shows when mpv is rendering the selected shader and when a preset is skipped because the scaling factor is too low.
+- Added an RTX Video Super Resolution toggle to the mpv Shaders menu for supported NVIDIA GPUs. On unsupported hardware, the toggle is disabled and a warning tooltip explains why.
 - The playback timeline floats over the picture, with separate translucent groups for transport and settings. Hover or focus the timeline to preview a seek while the playhead marks the current time. The title and controls fade together during playback in mpv and the native Dolby Vision player.
 - Switch mpv shaders during playback from **Playback Settings → Shaders**. Presets include FSRCNNX, RAVU Lite AR, ArtCNN and Anime4K. Add a local mpv shader file or select **Off** to restore standard scaling.
 - Fixed an intermittent horizontal line across featured artwork on Discover.

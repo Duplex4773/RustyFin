@@ -4,6 +4,7 @@ mod local;
 mod mel;
 pub use mel::LayerError;
 mod mpv;
+pub use mpv::ShaderStatus;
 mod native;
 mod refresh;
 pub mod transport;
@@ -325,7 +326,7 @@ impl Player {
             self.size = size;
         }
         let s = match &mut self.engine {
-            Engine::Mpv(p) => p.poll()?,
+            Engine::Mpv(p) => p.poll(self.panel_open && !self.audio_only)?,
             Engine::Native(p) => {
                 let status = p.poll()?;
                 self.label = p.label();
@@ -398,6 +399,18 @@ impl Player {
         match &self.engine {
             Engine::Mpv(p) if !self.audio_only => Some(&p.shader),
             _ => None,
+        }
+    }
+    pub fn shader_status(&self) -> Option<ShaderStatus> {
+        match &self.engine {
+            Engine::Mpv(p) if !self.audio_only => Some(p.shader_status),
+            _ => None,
+        }
+    }
+    pub fn rtx_support(&self) -> Result<(), &'static str> {
+        match &self.engine {
+            Engine::Mpv(p) if !self.audio_only => p.rtx_support(),
+            _ => Err("RTX Video Super Resolution requires mpv video playback."),
         }
     }
     pub fn set_shader(&mut self, shader: Shader) -> Result<()> {

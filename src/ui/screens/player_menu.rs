@@ -1,10 +1,90 @@
 use super::*;
-use crate::{jellyfin::Source, preferences::Shader, ui::playback::PlayerMenu};
+use crate::{
+    jellyfin::Source, player::ShaderStatus, preferences::Shader, ui::playback::PlayerMenu,
+};
 use PlayerMenu::*;
 
 const ROW: f32 = 38.;
 const HEADER: f32 = 48.;
 const SECONDARY: u32 = 0xc8cdce;
+const SHADER_READOUT: f32 = 62.;
+
+fn shader_readout(status: ShaderStatus) -> Div {
+    let (state, detail, color) = match status {
+        ShaderStatus::Off => ("Off", "Standard mpv scaling".into(), TEXT),
+        ShaderStatus::Checking => (
+            "Checking",
+            "Waiting for mpv to render the selected shader.".into(),
+            SECONDARY,
+        ),
+        ShaderStatus::Running {
+            passes,
+            milliseconds,
+        } => {
+            let unit = if passes == 1 { "pass" } else { "passes" };
+            let mut detail = format!("mpv reported {passes} shader {unit}");
+            if let Some(ms) = milliseconds {
+                let time = if ms < 0.01 {
+                    "<0.01".into()
+                } else {
+                    format!("{ms:.2}")
+                };
+                detail.push_str(&format!(" · {time} ms GPU time"));
+            }
+            ("Running", detail, LIME)
+        }
+        ShaderStatus::BelowScale { scale, required } => (
+            "Skipped",
+            format!("Scaling at {scale:.2}×. This preset needs more than {required:.2}×."),
+            SECONDARY,
+        ),
+        ShaderStatus::RtxRunning {
+            scale,
+            driver_accepted,
+        } => (
+            "RTX filter running",
+            if driver_accepted {
+                format!("{scale:.2}× output. The NVIDIA driver accepted the VSR request.")
+            } else {
+                format!("{scale:.2}× output. See the NVIDIA App for AI enhancement status.")
+            },
+            LIME,
+        ),
+        ShaderStatus::RtxUnavailable(reason) => ("RTX unavailable", reason.into(), 0xffd9b3),
+        ShaderStatus::RtxAtUhd => (
+            "Skipped",
+            "The source already reaches the 4K RTX output limit.".into(),
+            SECONDARY,
+        ),
+        ShaderStatus::NoPasses => (
+            "Unconfirmed",
+            "mpv has reported no matching render passes yet.".into(),
+            SECONDARY,
+        ),
+        ShaderStatus::Unavailable => (
+            "Unconfirmed",
+            "Render statistics are unavailable from mpv.".into(),
+            SECONDARY,
+        ),
+        ShaderStatus::Failed => (
+            "Shader error",
+            "Choose another shader or select Off.".into(),
+            0xffd9b3,
+        ),
+    };
+    div()
+        .h(px(SHADER_READOUT))
+        .w_full()
+        .flex_none()
+        .px_3()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .border_b_1()
+        .border_color(rgba(0xffffff28))
+        .child(label(state, 14., color).font_weight(FontWeight::SEMIBOLD))
+        .child(label(detail, 12., SECONDARY).line_clamp(2))
+}
 
 impl PlayerMenu {
     fn title(self) -> &'static str {
@@ -72,6 +152,19 @@ fn action(
             d.child(icon(g, 17.).text_color(rgb(SECONDARY)))
         })
         .child(label(name, 15., TEXT).min_w_0().flex_1().truncate())
+}
+
+fn unavailable_shader_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    reason: &'static str,
+) -> Stateful<Div> {
+    line()
+        .id(id)
+        .rounded_md()
+        .child(label(name, 15., MUTED).flex_1().min_w_0().truncate())
+        .child(icon("\u{e7ba}", 17.).text_color(rgb(MUTED)))
+        .tooltip(move |w, cx| Tooltip::new(reason).build(w, cx))
 }
 
 fn selection(id: impl Into<ElementId>, name: impl Into<SharedString>, on: bool) -> Stateful<Div> {
@@ -669,11 +762,35 @@ impl Library {
             .iter()
             .cloned()
             .map(Shader::Custom);
-        let mut rows = Vec::new();
+        let rtx_selected = current == &Shader::RtxVsr;
+        let rtx_label = Shader::RtxVsr.label().to_owned();
+        let rtx_row = match p.rtx_support() {
+            Ok(()) => action("rtx-video-super-resolution", rtx_label, None)
+                .when(rtx_selected, |d| self.initial_menu_button(d))
+                .child(switch(rtx_selected))
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    s.select_shader(
+                        if rtx_selected {
+                            Shader::Off
+                        } else {
+                            Shader::RtxVsr
+                        },
+                        cx,
+                    );
+                })),
+            Err(reason) => unavailable_shader_row("rtx-video-super-resolution", rtx_label, reason),
+        };
+        let mut rows = vec![rtx_row.into_any_element()];
         for (i, shader) in Shader::PRESETS.iter().cloned().chain(custom).enumerate() {
+            let id = ("player-shader", i);
+            let name = shader.label().to_owned();
+            if let Some(reason) = shader.disabled_reason() {
+                rows.push(unavailable_shader_row(id, name, reason).into_any_element());
+                continue;
+            }
             let selected = current == &shader;
             rows.push(
-                action(("player-shader", i), shader.label().to_owned(), None)
+                action(id, name, None)
                     .when(selected, |d| self.initial_menu_button(d))
                     .child(
                         label(shader.description(), 12., SECONDARY)
@@ -728,8 +845,18 @@ impl Library {
             });
         }
         let warning = !self.controls.warning.is_empty();
-        let height =
-            (HEADER + 12. + ROW * rows.len() as f32 + if warning { 48. } else { 0. }).min(492.);
+        let shader_status = (page == Shaders).then(|| p.shader_status()).flatten();
+        let status_height = if shader_status.is_some() {
+            SHADER_READOUT
+        } else {
+            0.
+        };
+        let height = (HEADER
+            + status_height
+            + 12.
+            + ROW * rows.len() as f32
+            + if warning { 48. } else { 0. })
+        .min(492.);
         let header = div()
             .h(px(HEADER))
             .w_full()
@@ -793,6 +920,7 @@ impl Library {
                 .border_1()
                 .border_color(rgba(0xffffff45))
                 .child(header)
+                .when_some(shader_status, |d, status| d.child(shader_readout(status)))
                 .child(body),
             height + 2.,
         )

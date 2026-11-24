@@ -239,6 +239,7 @@ pub struct Library {
     unmuted_volume: f64,
     playing: Option<Item>,
     player: Option<Player>,
+    fullscreen_before_video: Option<bool>,
     failure: Option<playback::Retry>,
     generation: u64,
 }
@@ -365,6 +366,7 @@ impl Library {
             unmuted_volume: 1.,
             playing: None,
             player: None,
+            fullscreen_before_video: None,
             failure: None,
             generation: 0,
         };
@@ -1196,6 +1198,10 @@ impl Library {
             &self.prefs,
         ) {
             Ok(mut player) => {
+                if !player.audio_only {
+                    self.fullscreen_before_video
+                        .get_or_insert_with(|| window.is_fullscreen());
+                }
                 self.controls.animate_chrome = scrolling::animations_enabled();
                 self.controls.volume_hovered = false;
                 if !self.controls.captions.is_empty() {

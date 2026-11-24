@@ -26,6 +26,10 @@ pub enum Shader {
     Fsrcnnx8,
     Fsrcnnx16,
     RavuLite,
+    RavuZoom,
+    Nnedi3,
+    SsimSuperRes,
+    RtxVsr,
     Anime4k,
     Custom(PathBuf),
 }
@@ -36,6 +40,9 @@ impl Shader {
         Self::Fsrcnnx8,
         Self::Fsrcnnx16,
         Self::RavuLite,
+        Self::RavuZoom,
+        Self::Nnedi3,
+        Self::SsimSuperRes,
         Self::ArtCnn16,
         Self::ArtCnn32,
         Self::ArtCnn16Ds,
@@ -55,6 +62,10 @@ impl Shader {
             Self::Fsrcnnx8 => "FSRCNNX 8",
             Self::Fsrcnnx16 => "FSRCNNX 16",
             Self::RavuLite => "RAVU Lite AR",
+            Self::RavuZoom => "RAVU Zoom AR r3",
+            Self::Nnedi3 => "NNEDI3",
+            Self::SsimSuperRes => "SSimSuperRes",
+            Self::RtxVsr => "RTX Video Super Resolution",
             Self::Anime4k => "Anime4K ×2",
             Self::Custom(path) => path
                 .file_name()
@@ -70,6 +81,10 @@ impl Shader {
             Self::Fsrcnnx8 => "Live action · Balanced",
             Self::Fsrcnnx16 => "Live action · Higher GPU cost",
             Self::RavuLite => "Live action · Anti-ringing",
+            Self::RavuZoom => "Live action · Fractional scaling",
+            Self::Nnedi3 => "Edge-directed · 64 neurons",
+            Self::SsimSuperRes => "Sharpen and reduce ringing",
+            Self::RtxVsr => "NVIDIA video processing",
             Self::ArtCnn16 => "Animation · Balanced",
             Self::ArtCnn32 => "Animation · Higher GPU cost",
             Self::ArtCnn16Ds => "Denoise and sharpen",
@@ -78,9 +93,18 @@ impl Shader {
         }
     }
 
+    pub fn disabled_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::ArtCnn32 => {
+                Some("Temporarily disabled because shader compilation can stall playback.")
+            }
+            _ => None,
+        }
+    }
+
     pub fn asset(&self) -> Option<&'static str> {
         Some(match self {
-            Self::Off | Self::Custom(_) => return None,
+            Self::Off | Self::RtxVsr | Self::Custom(_) => return None,
             Self::Sharpen => "sharpen.glsl",
             Self::Soften => "soften.glsl",
             Self::ArtCnn16 => "ArtCNN_C4F16.glsl",
@@ -89,6 +113,9 @@ impl Shader {
             Self::Fsrcnnx8 => "FSRCNNX_x2_8-0-4-1.glsl",
             Self::Fsrcnnx16 => "FSRCNNX_x2_16-0-4-1.glsl",
             Self::RavuLite => "ravu-lite-ar-r3.hook",
+            Self::RavuZoom => "ravu-zoom-ar-r3.hook",
+            Self::Nnedi3 => "nnedi3-nns64-win8x4.hook",
+            Self::SsimSuperRes => "SSimSuperRes.glsl",
             Self::Anime4k => "Anime4K_Upscale_CNN_x2_M.glsl",
         })
     }

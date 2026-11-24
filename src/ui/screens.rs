@@ -1301,6 +1301,14 @@ impl Library {
 
 impl Render for Library {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Keep the window state through a queued episode or track change.
+        if !self.busy
+            && self.player.as_ref().is_none_or(|p| p.audio_only)
+            && let Some(fullscreen) = self.fullscreen_before_video.take()
+            && w.is_fullscreen() != fullscreen
+        {
+            w.toggle_fullscreen();
+        }
         let return_opacity = self.return_opacity(w, cx);
         let root = div()
             .size_full()
