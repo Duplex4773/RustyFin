@@ -48,52 +48,57 @@ pub(super) fn heading(name: &'static str) -> Div {
         .mb(px(7.))
 }
 
-pub(super) fn row(
-    id: impl Into<ElementId>,
-    glyph: &'static str,
-    name: impl Into<SharedString>,
-    description: impl Into<SharedString>,
-    trailing: Div,
-) -> Stateful<Div> {
-    let description = description.into();
-    div()
-        .id(id)
-        .focusable()
-        .tab_stop(true)
-        .flex_none()
-        .w_full()
-        .min_h(px(54.))
-        .px_3()
-        .py(px(8.))
-        .flex()
-        .items_center()
-        .gap_3()
-        .rounded(px(4.))
-        .bg(rgb(SURFACE))
-        .cursor_pointer()
-        .hover(|d| d.bg(rgb(0x202126)))
-        .focus(|d| d.bg(rgb(ACTIVE)).border_1().border_color(rgb(MUTED)))
-        .child(
-            div()
-                .w(px(24.))
-                .flex_none()
-                .flex()
-                .justify_center()
-                .child(icon(glyph, 19.)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(label(name, 15., TEXT))
-                .when(!description.is_empty(), |d| {
-                    d.child(label(description, 13., 0xbfc0c5))
-                }),
-        )
-        .child(trailing.flex_none())
+impl Library {
+    pub(super) fn settings_row(
+        &self,
+        cx: &App,
+        id: impl Into<ElementId>,
+        glyph: &'static str,
+        name: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+        trailing: Div,
+    ) -> Stateful<Div> {
+        let description = description.into();
+        let button = div()
+            .id(id)
+            .focusable()
+            .tab_stop(true)
+            .flex_none()
+            .w_full()
+            .min_h(px(54.))
+            .px_3()
+            .py(px(8.))
+            .flex()
+            .items_center()
+            .gap_3()
+            .rounded(px(4.))
+            .bg(rgb(SURFACE))
+            .cursor_pointer()
+            .hover(|d| d.bg(rgb(0x202126)))
+            .focus(|d| d.bg(rgb(ACTIVE)).border_1().border_color(rgb(MUTED)))
+            .child(
+                div()
+                    .w(px(24.))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .child(icon(glyph, 19.)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(label(name, 15., TEXT))
+                    .when(!description.is_empty(), |d| {
+                        d.child(label(description, 13., 0xbfc0c5))
+                    }),
+            )
+            .child(trailing.flex_none());
+        self.settings_button(button, cx)
+    }
 }
 
 pub(super) fn toggle(on: bool) -> Div {
@@ -128,7 +133,7 @@ impl Library {
         description: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        row(page.title(), glyph, page.title(), description, arrow())
+        self.settings_row(cx, page.title(), glyph, page.title(), description, arrow())
             .on_click(cx.listener(move |s, _, w, cx| s.navigate(Screen::Settings(page), w, cx)))
     }
 
@@ -145,7 +150,8 @@ impl Library {
                 ),
                 self.category(Display, "\u{e7f4}", "Monitor and Windows HDR settings", cx),
                 self.category(Services, REFRESH, "Seerr, AniList, MDBList and Discord", cx),
-                row(
+                self.settings_row(
+                    cx,
                     "rotation",
                     "\u{e91b}",
                     "Rotate featured titles",
@@ -160,7 +166,8 @@ impl Library {
             ]))
             .child(heading("Connections"))
             .child(rows([
-                row(
+                self.settings_row(
+                    cx,
                     "add-profile",
                     "\u{e710}",
                     "Add connection",
@@ -169,7 +176,8 @@ impl Library {
                 )
                 .on_click(cx.listener(|s, _, w, cx| s.clear_session(w, cx))),
                 self.category(Profiles, ACCOUNT, format!("Manage accounts · {host}"), cx),
-                row(
+                self.settings_row(
+                    cx,
                     "search-all-servers",
                     SEARCH,
                     "Search all servers",
@@ -183,16 +191,18 @@ impl Library {
                 })),
             ]))
             .child(heading("Downloads"))
-            .child(rows([row(
-                "settings-downloads",
-                "\u{e8b7}",
-                "Offline library",
-                "View saved media and manage downloads",
-                arrow(),
-            )
-            .on_click(cx.listener(|s, _, w, cx| {
-                s.navigate(Screen::Downloads, w, cx)
-            }))]))
+            .child(rows([self
+                .settings_row(
+                    cx,
+                    "settings-downloads",
+                    "\u{e8b7}",
+                    "Offline library",
+                    "View saved media and manage downloads",
+                    arrow(),
+                )
+                .on_click(cx.listener(|s, _, w, cx| {
+                    s.navigate(Screen::Downloads, w, cx)
+                }))]))
             .child(heading("Controls"))
             .child(rows([self.category(
                 Shortcuts,
@@ -202,7 +212,8 @@ impl Library {
             )]))
             .child(heading("Advanced"))
             .child(rows([
-                row(
+                self.settings_row(
+                    cx,
                     "export-prefs",
                     "\u{e898}",
                     "Export settings",
@@ -210,7 +221,8 @@ impl Library {
                     arrow(),
                 )
                 .on_click(cx.listener(|s, _, w, cx| s.settings_file(true, w, cx))),
-                row(
+                self.settings_row(
+                    cx,
                     "import-prefs",
                     "\u{e896}",
                     "Import settings",
@@ -229,7 +241,8 @@ impl Library {
                 active.is_some_and(|a| a.user == account.user && a.server == account.server);
             let account = account.clone();
             accounts = accounts.child(
-                row(
+                self.settings_row(
+                    cx,
                     ("profile", i),
                     ACCOUNT,
                     account
@@ -247,7 +260,8 @@ impl Library {
             );
         }
         accounts.child(
-            row(
+            self.settings_row(
+                cx,
                 "sign-out",
                 "\u{f3b1}",
                 "Sign out",
@@ -267,17 +281,17 @@ impl Library {
                 self.prefs.binding(id, default)
             };
             list = list.child(
-                row(id, "\u{e765}", name, "", label(value, 14., TEXT)).on_click(cx.listener(
-                    move |s, _, w, cx| {
+                self.settings_row(cx, id, "\u{e765}", name, "", label(value, 14., TEXT))
+                    .on_click(cx.listener(move |s, _, w, cx| {
                         s.rebind = Some(id);
                         s.focus.focus(w);
                         cx.notify();
-                    },
-                )),
+                    })),
             );
         }
         list.child(
-            row(
+            self.settings_row(
+                cx,
                 "reset-keys",
                 REFRESH,
                 "Restore default shortcuts",
@@ -293,6 +307,7 @@ impl Library {
     }
 
     pub(super) fn settings(&self, page: SettingsPage, cx: &mut Context<Self>) -> Div {
+        self.state.settings_nav.begin_layout();
         let header = div()
             .flex()
             .items_center()
@@ -300,7 +315,7 @@ impl Library {
             .mb(px(20.))
             .when(page != SettingsPage::Overview, |d| {
                 d.child(
-                    glyph_button("Back to settings", BACK)
+                    self.settings_button(glyph_button("Back to settings", BACK), cx)
                         .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                 )
             })

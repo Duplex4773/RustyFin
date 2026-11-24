@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-RustyFin is a Windows x64 Jellyfin player built with Rust and GPUI. Sign in with Quick Connect, browse video, music and live TV, and play the original media source. The client saves the sign-in in Windows Credential Manager and reports playback progress to Jellyfin.
+RustyFin is a Windows x64 Jellyfin player built with Rust and GPUI. Sign in with Quick Connect or your Jellyfin username and password, browse video, music and live TV, and play the original media source. The client saves the session token in Windows Credential Manager and reports playback progress to Jellyfin.
 
 [Changelog](CHANGELOG.md)
 
@@ -20,11 +20,15 @@ cargo build --locked
 .\target\debug\rustyfin.exe
 ```
 
-The scripts install libmpv and build the x64 C++/WinRT Media Foundation source against a pinned FFmpeg development package. Both downloads are SHA-256 verified. Keep the `media` directory beside `rustyfin.exe`. For a release build, run `cargo build --locked --release` and pass `-OutputDirectory .\target\release` to both scripts.
+The scripts install libmpv and build the x64 C++/WinRT Media Foundation source against a pinned FFmpeg development package. Both downloads are SHA-256 verified. Keep the `media` and `shaders` directories beside `rustyfin.exe`. For a release build, run `cargo build --locked --release` and pass `-OutputDirectory .\target\release` to both scripts.
 
-Enter the server URL, including any reverse-proxy base path. Choose **Get pairing code**, then enter the code under **Quick Connect** in a signed-in Jellyfin client. [Jellyfin Quick Connect](https://jellyfin.org/docs/general/server/quick-connect/)
+Enter the server URL, including any reverse-proxy base path. Choose **Use username and password** to sign in directly. For Quick Connect, choose **Get pairing code** and enter the code in a signed-in Jellyfin client. If the server has disabled Quick Connect, RustyFin opens the password form automatically. [Jellyfin Quick Connect](https://jellyfin.org/docs/general/server/quick-connect/)
 
 ## Playback
+
+During mpv video playback, open **Playback Settings → Shaders** to switch presets or turn them **Off**. Changes apply to the current video and the selected preset follows your profile. **Add shader file…** accepts a local mpv `.glsl` or `.hook` file and keeps a reference to that path. Upscalers run when the displayed video exceeds the source size by the amount specified by each shader. The first use of a preset can take time while the GPU driver compiles it. Native Dolby Vision playback uses the Windows renderer.
+
+Start with **FSRCNNX 8** for live action. Try **FSRCNNX 16** on clean footage if your GPU can sustain the frame rate, or **RAVU Lite AR** to limit ringing around edges. **ArtCNN C4F16 DS** denoises and sharpens as it upscales, which can help compressed sources and can soften intentional film grain. For animation, try **ArtCNN C4F16**, **C4F32** or **Anime4K ×2**. [Bundled shader sources and licenses](assets/shaders/README.md)
 
 | Source | Playback path |
 | --- | --- |
@@ -33,6 +37,8 @@ Enter the server URL, including any reverse-proxy base path. Choose **Get pairin
 | Profile 7 MEL, with compatibility enabled | Local adaptation to Profile 8.1 and the Windows Dolby renderer |
 | Profile 7 FEL, or MEL with compatibility disabled | HDR10 base layer via embedded libmpv |
 | Unsupported Dolby profile or unverified Dolby output | Playback stops and the library shows the reason |
+
+For ordinary HDR playback, mpv negotiates the output colour space with the active display. Its video surface sits beneath a transparent GPUI control layer. An HDR10+ source can play in HDR10 on Windows. The format strip identifies the source, while the display’s signal information identifies the output.
 
 RustyFin requests the original file through Jellyfin Direct Play. For Dolby Vision, Windows provides the seekable input stream. A client-side media source demuxes it and feeds the original compressed video and timestamps to the Windows decoder and Dolby renderer. It checks the file's Dolby configuration, obtains the renderer profile and decoder attributes from the Windows MP4 demuxer using one compressed picture in memory, and verifies the selected Media Engine stream.
 
@@ -48,8 +54,9 @@ The output check follows the monitor containing the playback window. It accepts 
 
 ## Using RustyFin
 
-- **Top navigation** keeps Home, Favourites, Collections and your Jellyfin libraries within reach while browsing. On smaller windows, additional libraries move into **More**, alongside All libraries, Explore and Live TV. Search, Downloads and Settings are on the right.
-- **Discover** opens with a featured title. Select a Continue Watching card to resume a movie or episode, or start the next episode of a show. Scroll down for Recently Added TV and Recently Added Movies. **Browse library** opens the full catalogue with filters, collections, playlists, music and folders.
+- **Top navigation** keeps Home, Favourites, Collections and your Jellyfin libraries within reach while browsing. On smaller windows, additional libraries move into **More**, alongside All libraries, Explore and Live TV. Search, Downloads, Settings and Profiles are on the right.
+- **Discover** opens with a featured title. Select a Continue Watching card to play it. Open its **More** menu with the mouse, Shift+F10 or controller X for title details, the series, watched status or **Play from beginning**. Scroll down for Recently Added TV and Recently Added Movies. If a server or feed fails to refresh, Home keeps the titles already loaded and offers a retry.
+- **Search** opens with `/` and remembers recent searches for each profile. Select the best match artwork for details, or use its Play or Resume button. Movies and shows use posters, episodes use stills, and people use portraits. Back returns to the same query and selected result. Choose **Clear history** on the empty search screen to remove recent searches.
 - **Series details** show the episode to resume or play next, its still and how much time is left. Press Enter to play it. Press Down to browse seasons, Left or Right to switch seasons, and Down again to choose an episode. Browsing another season keeps the main Resume action on your unfinished episode.
 - **Movie details** show the edition and format beside Play. Choose an edition when more than one is available, or open **More** for tracks, chapters, downloads, watched status and metadata editing. Select a cast portrait to explore that person's titles, or a trailer to open its details.
 - **More like this** shows recommendations from the current Jellyfin server beneath the title details. Select a poster to open it, or use the arrows to see more. Episode pages use their series for recommendations.
@@ -68,7 +75,7 @@ Account tokens and service keys are stored in Windows Credential Manager. New in
 | --- | --- |
 | Browse | Scroll through the library continuously. Arrow keys move between posters. Page Up and Page Down move one screen, and Home and End jump to the ends. When sorting by title, select a letter on the right or type it to jump. On a controller, move right from the last column to enter the alphabet rail, choose a letter with the D-pad, and press A. Enter opens a title. Back returns to its poster. The slash key opens Search. Tab and Shift+Tab move between buttons. |
 | Playback | Space or Enter pauses and resumes. Left and Right seek ten seconds. Up and Down adjust volume. T previews a seek. Left and Right move the preview, Enter seeks, and Escape cancels. M toggles mute, O opens playback options, and the square brackets adjust mpv zoom. F or F11 switches fullscreen. Escape leaves fullscreen or returns to the title. |
-| XInput controller | D-pad or left stick navigates. A activates, B goes back, shoulders move focus, Y opens playback settings, X previews a seek, and Start sends Space. |
+| XInput controller | D-pad or left stick navigates, A selects, B goes back and shoulders move focus. In Search, A opens the on-screen keyboard, X deletes and Start submits. In Settings, the D-pad moves between controls and B returns focus to the setting you opened. During playback, Y opens settings and X previews a seek. |
 
 ## Check a Dolby Vision setup
 

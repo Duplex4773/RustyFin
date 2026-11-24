@@ -13,9 +13,11 @@ impl Library {
         } else {
             "Share playback activity"
         };
-        let ratings = pill("mdblist", ratings_label, None, linked)
+        let ratings = self
+            .service_button(cx, "mdblist", ratings_label, None, linked)
             .on_click(cx.listener(|s, _, w, cx| s.connect_ratings(w, cx)));
-        let presence = pill("discord", presence_label, None, sharing)
+        let presence = self
+            .service_button(cx, "discord", presence_label, None, sharing)
             .on_click(cx.listener(|s, _, w, cx| s.connect_discord(w, cx)));
         let mut panel = div()
             .p_4()
@@ -25,14 +27,16 @@ impl Library {
             .items_start()
             .gap_2()
             .child(title("MDBList ratings", 18.))
-            .when(!linked, |d| d.child(Input::new(&self.services.mdb_input)))
+            .when(!linked, |d| {
+                d.child(self.settings_input(&self.services.mdb_input, cx))
+            })
             .child(ratings)
             .child(title("Discord Rich Presence", 18.));
         if !sharing {
             let description = "Share the current title through the Discord desktop client using your Discord application ID.";
             panel = panel
                 .child(label(description, 14., MUTED))
-                .child(Input::new(&self.services.discord_input));
+                .child(self.settings_input(&self.services.discord_input, cx));
         }
         panel.child(presence)
     }
@@ -47,7 +51,7 @@ impl Library {
             .child(title("Seerr", 18.));
         if self.explore.client.is_some() {
             return panel.child(
-                pill("disconnect-seerr", "Disconnect Seerr", None, false)
+                self.service_button(cx, "disconnect-seerr", "Disconnect Seerr", None, false)
                     .on_click(cx.listener(|s, _, w, cx| s.disconnect_seerr(w, cx))),
             );
         }
@@ -57,10 +61,10 @@ impl Library {
                 14.,
                 MUTED,
             ))
-            .child(Input::new(&self.explore.address))
-            .child(Input::new(&self.explore.key))
+            .child(self.settings_input(&self.explore.address, cx))
+            .child(self.settings_input(&self.explore.key, cx))
             .child(
-                pill("connect-seerr", "Connect Seerr", None, true)
+                self.service_button(cx, "connect-seerr", "Connect Seerr", None, true)
                     .on_click(cx.listener(|s, _, w, cx| s.connect_seerr(w, cx))),
             );
         panel

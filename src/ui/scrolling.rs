@@ -78,7 +78,7 @@ fn wheel_lines() -> Option<u32> {
     (lines > 0).then_some(lines)
 }
 
-fn animations_enabled() -> bool {
+pub(super) fn animations_enabled() -> bool {
     let mut enabled = windows::core::BOOL::default();
     // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL.
     unsafe {

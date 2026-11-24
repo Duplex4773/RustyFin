@@ -19,17 +19,18 @@ impl Library {
                     14.,
                     MUTED,
                 ))
-                .child(Input::new(&self.anime.app_id))
+                .child(self.settings_input(&self.anime.app_id, cx))
                 .child(
-                    pill("anime-auth", "Authorize PIN application", None, false)
+                    self.service_button(cx, "anime-auth", "Authorize PIN application", None, false)
                         .on_click(cx.listener(|s, _, _, cx| s.authorize_anime(cx))),
                 )
-                .child(Input::new(&self.anime.pin));
+                .child(self.settings_input(&self.anime.pin, cx));
         }
         if signed {
             let on = self.prefs.anime_sync;
             form = form.child(
-                pill(
+                self.service_button(
+                    cx,
                     "ani-sync",
                     if on {
                         "Sync completed playback · On"
@@ -46,7 +47,8 @@ impl Library {
             );
         }
         form.child(
-            pill(
+            self.service_button(
+                cx,
                 "anime-connect",
                 if signed {
                     "Disconnect AniList"

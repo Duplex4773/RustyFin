@@ -3,6 +3,8 @@ use gpui::{ObjectFit, div, img, prelude::*, px, relative};
 use std::{sync::Arc, time::Instant};
 
 const NEUTRAL: u32 = 0x171a20;
+const WASH_WIDTH: u32 = 144;
+const WASH_HEIGHT: u32 = 96;
 
 struct Palette {
     tint: Hsla,
@@ -73,8 +75,11 @@ fn wash_frame(palette: &Palette) -> image::RgbaImage {
     let pool = |x: f32, y: f32| (-1.65 * (x * x + y * y)).exp();
     let main = Rgba::from(main);
     let accent = Rgba::from(palette.accent);
-    image::RgbaImage::from_fn(144, 96, |ix, iy| {
-        let (x, y) = (ix as f32 / 143., iy as f32 / 95.);
+    // Duplicate the edge texels so linear filtering stays inside this image's
+    // atlas tile, even where the wash starts and ends over bright artwork.
+    image::RgbaImage::from_fn(WASH_WIDTH + 2, WASH_HEIGHT + 2, |ix, iy| {
+        let x = ix.saturating_sub(1).min(WASH_WIDTH - 1) as f32 / (WASH_WIDTH - 1) as f32;
+        let y = iy.saturating_sub(1).min(WASH_HEIGHT - 1) as f32 / (WASH_HEIGHT - 1) as f32;
         let primary = pool((x - palette.main_x) / 0.57, (y - 0.46) / 0.60);
         let secondary = pool((x - (1. - palette.main_x)) / 0.47, (y - 0.61) / 0.43);
         let ink = rgb(0x171b1c)
@@ -220,6 +225,8 @@ impl ArtworkGlass {
 
     pub fn wash(&self, start: f32, end: f32) -> Div {
         let span = end - start;
+        let pad_x = 1. / WASH_WIDTH as f32;
+        let pad_y = 1. / WASH_HEIGHT as f32;
         div()
             .absolute()
             .inset_0()
@@ -227,11 +234,11 @@ impl ArtworkGlass {
             .children(self.visible_layers().map(|(layers, weight)| {
                 img(layers.wash.clone())
                     .absolute()
-                    // Keep bilinear sampling inside the atlas tile at the window edges.
-                    .left(relative(-1. / 144.))
-                    .w(relative(1. + 2. / 144.))
-                    .top(relative(-start / span))
-                    .h(relative(1. / span))
+                    // Map the visible slice to the unpadded part of the image.
+                    .left(relative(-pad_x))
+                    .w(relative(1. + 2. * pad_x))
+                    .top(relative(-(start + pad_y) / span))
+                    .h(relative((1. + 2. * pad_y) / span))
                     .object_fit(ObjectFit::Fill)
                     .opacity(weight)
             }))
@@ -313,6 +320,15 @@ mod tests {
         assert!(lr > rr + 20 && rb > lb + 20);
         assert_eq!((la, ra), (255, 255));
         assert!(wash.get_pixel(111, 74)[3] < 150);
-        assert!(wash.rows().next_back().unwrap().all(|pixel| pixel[3] == 0));
+        for x in 0..wash.width() {
+            assert_eq!(wash[(x, 0)], wash[(x, 1)]);
+            assert_eq!(wash[(x, WASH_HEIGHT)], wash[(x, WASH_HEIGHT + 1)]);
+            assert_eq!(wash[(x, 1)][3], 0);
+            assert_eq!(wash[(x, WASH_HEIGHT)][3], 0);
+        }
+        for y in 0..wash.height() {
+            assert_eq!(wash[(0, y)], wash[(1, y)]);
+            assert_eq!(wash[(WASH_WIDTH, y)], wash[(WASH_WIDTH + 1, y)]);
+        }
     }
 }

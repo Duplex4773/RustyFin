@@ -63,45 +63,36 @@ impl Library {
         if self.formats.pending >= 2 || self.server.is_none() {
             return;
         }
-        let items: Box<dyn Iterator<Item = &Item> + '_> = match &self.state.screen {
-            Screen::Discover => Box::new(self.shelves.iter().zip(&self.shelf_scroll).flat_map(
-                |(s, handle)| {
-                    s.items.iter().enumerate().filter_map(move |(i, item)| {
-                        let near = handle.bounds_for_item(i).map_or(i < 6, |card| {
-                            let left = card.left() + handle.offset().x;
-                            left < handle.bounds().right() + card.size.width
-                                && left + card.size.width * 2. > handle.bounds().left()
-                        });
-                        near.then_some(item)
-                    })
-                },
-            )),
-            Screen::Library(..) => Box::new(self.state.wall.near_items()),
-            Screen::Search(_) => {
-                let columns = screens::CatalogGrid::for_window(w).columns;
-                let first = self.state.scroll.top_item().saturating_sub(1);
-                let end = (self.state.scroll.bottom_item() + 2).max(first + 3);
-                Box::new(
-                    self.state
-                        .page
-                        .iter()
-                        .flat_map(|p| &p.items)
-                        .skip(first * columns)
-                        .take((end - first) * columns),
-                )
-            }
-            Screen::Detail(..) => {
-                let (_, range, items) = self.state.similar_cards(w);
-                Box::new(
-                    self.state
-                        .page
-                        .iter()
-                        .flat_map(|p| &p.items)
-                        .chain(&items[range]),
-                )
-            }
-            _ => return,
-        };
+        let items: Box<dyn Iterator<Item = &Item> + '_> =
+            match &self.state.screen {
+                Screen::Discover => Box::new(self.shelves.iter().zip(&self.shelf_scroll).flat_map(
+                    |(s, handle)| {
+                        s.items.iter().enumerate().filter_map(move |(i, item)| {
+                            let near = handle.bounds_for_item(i).map_or(i < 6, |card| {
+                                let left = card.left() + handle.offset().x;
+                                left < handle.bounds().right() + card.size.width
+                                    && left + card.size.width * 2. > handle.bounds().left()
+                            });
+                            near.then_some(item)
+                        })
+                    },
+                )),
+                Screen::Library(..) => Box::new(self.state.wall.near_items()),
+                Screen::Search(_) => Box::new(self.state.search.groups.iter().flat_map(|g| {
+                    &g.page.items[g.visible(screens::search_grid(g.kind, w).columns)]
+                })),
+                Screen::Detail(..) => {
+                    let (_, range, items) = self.state.similar_cards(w);
+                    Box::new(
+                        self.state
+                            .page
+                            .iter()
+                            .flat_map(|p| &p.items)
+                            .chain(&items[range]),
+                    )
+                }
+                _ => return,
+            };
         let mut requests = Vec::new();
         for item in items.filter(|i| needs_summary(i)) {
             let key = Key::for_item(item);

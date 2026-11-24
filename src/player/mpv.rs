@@ -10,12 +10,12 @@ use windows::Win32::Foundation::HWND;
 
 use super::Status;
 use crate::preferences::{Channels, MpvSettings, Shader, SubtitleStyle};
-use std::io::Write;
 
 type Handle = *mut c_void;
 type SetOption = unsafe extern "C" fn(Handle, *const c_char, *const c_char) -> c_int;
 type GetProperty = unsafe extern "C" fn(Handle, *const c_char, c_int, *mut c_void) -> c_int;
 type Command = unsafe extern "C" fn(Handle, *const *const c_char) -> c_int;
+type SetProperty = unsafe extern "C" fn(Handle, *const c_char, c_int, *mut c_void) -> c_int;
 
 // Layouts and identifiers come from libmpv's public client API v2 (mpv/client.h).
 #[repr(C)]
@@ -31,18 +31,51 @@ struct EndFile {
     error: c_int,
 }
 
+#[repr(C)]
+union NodeValue {
+    string: *const c_char,
+    list: *mut NodeList,
+}
+
+#[repr(C)]
+struct Node {
+    value: NodeValue,
+    format: c_int,
+}
+
+#[repr(C)]
+struct NodeList {
+    count: c_int,
+    values: *mut Node,
+    keys: *mut *mut c_char,
+}
+
+#[repr(C)]
+struct LogMessage {
+    prefix: *const c_char,
+    level: *const c_char,
+    text: *const c_char,
+    log_level: c_int,
+}
+
+const FORMAT_STRING: c_int = 1;
+const FORMAT_NODE: c_int = 6;
+const FORMAT_NODE_ARRAY: c_int = 7;
+
 pub struct Mpv {
     handle: NonNull<c_void>,
     destroy: unsafe extern "C" fn(Handle),
     command: Command,
     property: GetProperty,
+    set_property: SetProperty,
     free: unsafe extern "C" fn(*mut c_void),
     event: unsafe extern "C" fn(Handle, f64) -> *const Event,
     loaded: bool,
     passthrough_enabled: bool,
     pcm_output: bool,
     pcm_filters: Option<(bool, bool)>,
-    _shader: Option<tempfile::NamedTempFile>,
+    pub shader: Shader,
+    pub shader_error: Option<String>,
     selection: Option<(Option<i32>, Option<i32>, Option<url::Url>)>,
     _library: Library,
 }
@@ -53,18 +86,6 @@ impl Mpv {
         request: &crate::jellyfin::PlayRequest,
         settings: &MpvSettings,
     ) -> Result<Self> {
-        let shader = match settings.shader {
-            Shader::Sharpen if !request.audio_only => Some(include_str!("sharpen.glsl")),
-            Shader::Soften if !request.audio_only => Some(include_str!("soften.glsl")),
-            _ => None,
-        }
-        .map(|text| -> Result<_> {
-            let mut file = tempfile::Builder::new().suffix(".glsl").tempfile()?;
-            file.write_all(text.as_bytes())?;
-            file.flush()?;
-            Ok(file)
-        })
-        .transpose()?;
         let dir = env::current_exe()?
             .parent()
             .context("Missing executable directory")?
@@ -87,14 +108,19 @@ impl Mpv {
             let command = *lib.get(b"mpv_command\0")?;
             let free = *lib.get(b"mpv_free\0")?;
             let property = *lib.get(b"mpv_get_property\0")?;
+            let set_property = *lib.get(b"mpv_set_property\0")?;
+            let request_log = *lib.get::<unsafe extern "C" fn(Handle, *const c_char) -> c_int>(
+                b"mpv_request_log_messages\0",
+            )?;
             let event = *lib.get(b"mpv_wait_event\0")?;
             let create = *lib.get::<unsafe extern "C" fn() -> Handle>(b"mpv_create\0")?;
             let handle = NonNull::new(create()).context("Creating an mpv player")?;
-            let player = Self {
+            let mut player = Self {
                 handle,
                 destroy,
                 command,
                 property,
+                set_property,
                 free,
                 event,
                 loaded: false,
@@ -105,7 +131,8 @@ impl Mpv {
                     settings.center && settings.channels == Channels::Stereo,
                 ))
                 .filter(|(normalize, center)| *normalize || *center),
-                _shader: shader,
+                shader: Shader::Off,
+                shader_error: None,
                 selection: Some((
                     request.audio_index,
                     request.subtitle_index,
@@ -154,25 +181,47 @@ impl Mpv {
                 ))
                 .with_context(|| format!("Setting mpv option {key}"))?;
             }
-            if matches!(
-                request.route,
-                crate::jellyfin::Route::FelHdr10 | crate::jellyfin::Route::MelHdr10
-            ) {
+            if !request.audio_only {
+                if let Ok(cache) = crate::preferences::shader_cache_path()
+                    && let Some(cache) = cache.to_str()
+                {
+                    let cache = CString::new(cache.replace('\\', "/"))?;
+                    check(set(
+                        handle.as_ptr(),
+                        c"gpu-shader-cache-dir".as_ptr(),
+                        cache.as_ptr(),
+                    ))
+                    .context("Setting the mpv shader cache directory")?;
+                }
+                let base_layer = matches!(
+                    request.route,
+                    crate::jellyfin::Route::FelHdr10 | crate::jellyfin::Route::MelHdr10
+                );
+                // Let gpu-next negotiate the output with the display that owns wid.
+                // PQ's reference black is zero even when DXGI reports a higher floor.
                 for (key, value) in [
-                    (c"vf", c"format=dolbyvision=no"),
-                    (c"target-colorspace-hint", c"yes"),
-                    (c"target-colorspace-hint-mode", c"source"),
+                    (c"gpu-api", c"auto"),
+                    (c"gpu-shader-cache", c"yes"),
+                    (
+                        c"target-colorspace-hint",
+                        if base_layer { c"yes" } else { c"auto" },
+                    ),
+                    (c"target-contrast", c"inf"),
+                    (c"tone-mapping", c"auto"),
+                    (c"hdr-compute-peak", c"auto"),
                 ] {
                     check(set(handle.as_ptr(), key.as_ptr(), value.as_ptr()))
-                        .context("Configuring HDR10 base-layer playback")?;
+                        .with_context(|| format!("Setting mpv option {}", key.to_string_lossy()))?;
                 }
-            }
-            if let Some(shader) = &player._shader {
-                check(set(
-                    handle.as_ptr(),
-                    c"glsl-shaders".as_ptr(),
-                    CString::new(shader.path().to_string_lossy().as_bytes())?.as_ptr(),
-                ))?;
+                if base_layer {
+                    for (key, value) in [
+                        (c"vf", c"format=dolbyvision=no"),
+                        (c"target-colorspace-hint-mode", c"source"),
+                    ] {
+                        check(set(handle.as_ptr(), key.as_ptr(), value.as_ptr()))
+                            .context("Configuring HDR10 base-layer playback")?;
+                    }
+                }
             }
             if !matches!(settings.subtitle, SubtitleStyle::Authored) {
                 let color = if settings.subtitle == SubtitleStyle::YellowOutline {
@@ -190,9 +239,69 @@ impl Mpv {
                 }
             }
             check(initialize(handle.as_ptr())).context("Starting mpv")?;
+            if !request.audio_only {
+                check(request_log(handle.as_ptr(), c"error".as_ptr()))?;
+                if settings.shader != Shader::Off
+                    && let Err(error) = player.set_shader(settings.shader.clone())
+                {
+                    player.shader_error = Some(format!("{error:#}"));
+                }
+            }
             player.run(&["loadfile", request.url.as_str()])?;
             Ok(player)
         }
+    }
+
+    pub fn set_shader(&mut self, shader: Shader) -> Result<()> {
+        let path = match &shader {
+            Shader::Custom(path) => Some(path.clone()),
+            preset => preset
+                .asset()
+                .map(|file| {
+                    Ok::<_, std::io::Error>(
+                        env::current_exe()?.with_file_name("shaders").join(file),
+                    )
+                })
+                .transpose()?,
+        };
+        let path = path
+            .map(|path| -> Result<_> {
+                ensure!(path.is_file(), "Shader file missing: {}", path.display());
+                let path = path.to_str().context("Invalid shader path encoding.")?;
+                Ok(CString::new(path)?)
+            })
+            .transpose()?;
+        let mut entry = Node {
+            value: NodeValue {
+                string: path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+            },
+            format: FORMAT_STRING,
+        };
+        let mut list = NodeList {
+            count: c_int::from(path.is_some()),
+            values: &raw mut entry,
+            keys: ptr::null_mut(),
+        };
+        let mut node = Node {
+            value: NodeValue {
+                list: &raw mut list,
+            },
+            format: FORMAT_NODE_ARRAY,
+        };
+        // Set a real list so semicolons and other legal Windows filename characters
+        // are passed unchanged. An empty array clears the shaders in one operation.
+        check(unsafe {
+            (self.set_property)(
+                self.handle.as_ptr(),
+                c"glsl-shaders".as_ptr(),
+                FORMAT_NODE,
+                (&raw mut node).cast(),
+            )
+        })
+        .context("Could not change the mpv shader.")?;
+        self.shader = shader;
+        self.shader_error = None;
+        Ok(())
     }
 
     fn run(&self, args: &[&str]) -> Result<()> {
@@ -226,6 +335,22 @@ impl Mpv {
                 match e.id {
                     0 => break,
                     1 => ended = true,
+                    2 if !e.data.is_null() && self.shader != Shader::Off => {
+                        let log = &*e.data.cast::<LogMessage>();
+                        let message = std::ffi::CStr::from_ptr(log.text).to_string_lossy();
+                        if [
+                            "Failed to parse user shader",
+                            "Failed compiling shader",
+                            "Failed dispatching COMPUTE shader",
+                        ]
+                        .iter()
+                        .any(|error| message.contains(error))
+                        {
+                            self.shader_error = Some(
+                                "mpv reported a shader error. Choose Off or another shader.".into(),
+                            );
+                        }
+                    }
                     7 if !e.data.is_null() => {
                         let end = &*e.data.cast::<EndFile>();
                         if end.reason == 4 {

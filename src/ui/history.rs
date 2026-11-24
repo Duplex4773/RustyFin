@@ -23,9 +23,16 @@ impl Screen {
             }
             (Self::Guide(a), Self::Guide(b)) => a.id == b.id && a.origin == b.origin,
             (Self::Detail(a, _), Self::Detail(b, _)) => a.id == b.id && a.origin == b.origin,
-            (Self::Copies { item: a, play: ap }, Self::Copies { item: b, play: bp }) => {
-                ap == bp && a.id == b.id && a.origin == b.origin
-            }
+            (
+                Self::Copies {
+                    item: a,
+                    action: ap,
+                },
+                Self::Copies {
+                    item: b,
+                    action: bp,
+                },
+            ) => ap == bp && a.id == b.id && a.origin == b.origin,
             _ => false,
         }
     }
@@ -33,8 +40,7 @@ impl Screen {
 
 impl History {
     pub fn visit(&mut self, current: &mut ViewState, screen: Screen) {
-        let mut next = ViewState::new(screen);
-        next.people_search = current.people_search;
+        let next = ViewState::new(screen);
         let previous = std::mem::replace(current, next);
         if !previous.screen.same_destination(&current.screen) {
             self.clear_forward();
@@ -46,10 +52,10 @@ impl History {
         }
     }
 
-    pub fn can_go(&self, direction: NavigationDirection) -> bool {
+    pub fn destination(&self, direction: NavigationDirection) -> Option<&ViewState> {
         match direction {
-            NavigationDirection::Back => !self.back.is_empty(),
-            NavigationDirection::Forward => !self.forward.is_empty(),
+            NavigationDirection::Back => self.back.last(),
+            NavigationDirection::Forward => self.forward.last(),
         }
     }
 
@@ -165,19 +171,19 @@ mod tests {
         assert_eq!(current.selection, 37);
         history.go(&mut current, Back);
         assert!(matches!(current.screen, Screen::Discover));
-        assert!(!history.can_go(Back));
+        assert!(history.destination(Back).is_none());
         history.go(&mut current, Forward);
         assert_eq!(current.selection, 37);
         history.go(&mut current, Forward);
         assert!(matches!(current.screen, Screen::Downloads));
         history.go(&mut current, Back);
         history.visit(&mut current, Screen::Search("Fallout".into()));
-        assert!(!history.can_go(Forward));
+        assert!(history.destination(Forward).is_none());
         history.go(&mut current, Back);
         assert_eq!(current.selection, 37);
         history.clear();
-        assert!(!history.can_go(Forward));
-        assert!(!history.can_go(Back));
+        assert!(history.destination(Forward).is_none());
+        assert!(history.destination(Back).is_none());
     }
 
     #[test]
@@ -185,7 +191,7 @@ mod tests {
         let mut history = History::default();
         let mut current = ViewState::new(Screen::Discover);
         history.visit(&mut current, Screen::Discover);
-        assert!(!history.can_go(Back));
+        assert!(history.destination(Back).is_none());
         history.visit(
             &mut current,
             Screen::Library(Tab::Browse, CatalogQuery::default()),

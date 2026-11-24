@@ -6,12 +6,11 @@ pub use mel::LayerError;
 mod mpv;
 mod native;
 mod refresh;
-mod timeline;
-pub use timeline::{HEIGHT as TIMELINE_HEIGHT, RAIL_INSET};
 pub mod transport;
 pub use native::OutputLost;
 
 use crate::jellyfin::{PlayRequest, Route, Server};
+use crate::preferences::Shader;
 use anyhow::{Context, Result, ensure};
 use gpui::Window;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -24,7 +23,67 @@ use windows::{
     core::w,
 };
 
-pub const CONTROLS_HEIGHT: f32 = 78.0;
+const CONTROLS_IDLE: Duration = Duration::from_millis(2600);
+const CONTROLS_FADE: Duration = Duration::from_millis(180);
+
+struct ControlsVisibility {
+    last_activity: Instant,
+    fade_start: Option<Instant>,
+}
+
+impl ControlsVisibility {
+    fn wake(&mut self, now: Instant) {
+        self.last_activity = now;
+        self.fade_start = None;
+    }
+
+    fn opacity(&mut self, now: Instant, pinned: bool, animate: bool) -> f32 {
+        if pinned {
+            self.wake(now);
+        }
+        if now.duration_since(self.last_activity) < CONTROLS_IDLE {
+            return 1.;
+        }
+        if !animate {
+            return 0.;
+        }
+        // Playback status is polled at 5 Hz. Start the fade on the first frame
+        // after the timeout, then render the transition at the display cadence.
+        let start = *self.fade_start.get_or_insert(now);
+        let t = (now.duration_since(start).as_secs_f32() / CONTROLS_FADE.as_secs_f32()).min(1.);
+        1. - t * t * (3. - 2. * t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controls_fade_from_the_first_idle_frame_and_wake_on_input() {
+        let now = Instant::now();
+        let mut controls = ControlsVisibility {
+            last_activity: now,
+            fade_start: None,
+        };
+        let idle_frame = now + CONTROLS_IDLE + Duration::from_millis(160);
+        assert_eq!(controls.opacity(idle_frame, false, true), 1.);
+        assert!(
+            (controls.opacity(idle_frame + CONTROLS_FADE / 2, false, true) - 0.5).abs() < 0.001
+        );
+        assert_eq!(
+            controls.opacity(idle_frame + CONTROLS_FADE, false, true),
+            0.
+        );
+
+        let input = idle_frame + Duration::from_secs(2);
+        controls.wake(input);
+        assert_eq!(controls.opacity(input, false, true), 1.);
+        let paused = input + CONTROLS_IDLE;
+        assert_eq!(controls.opacity(paused, true, false), 1.);
+        assert_eq!(controls.opacity(paused + CONTROLS_IDLE, false, false), 0.);
+    }
+}
 
 pub fn resolve_profile7(request: &mut PlayRequest, mel_to_81: bool) -> Result<()> {
     if request.route == Route::Profile7 {
@@ -55,13 +114,6 @@ impl Drop for Surface {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-struct VideoRegion {
-    width: i32,
-    bottom: i32,
-    holes: [Option<[i32; 5]>; 3],
-}
-
 pub struct Player {
     // The engine must release its presentation resources before destroying the HWND.
     engine: Engine,
@@ -76,13 +128,11 @@ pub struct Player {
     size: (i32, i32),
     opened: Instant,
     last_pointer: gpui::Point<gpui::Pixels>,
-    last_motion: Instant,
-    pub controls_visible: bool,
+    controls: ControlsVisibility,
+    keyboard_controls: bool,
     pub audio_only: bool,
     pub seekable: bool,
     pub panel_open: bool,
-    cutout: std::cell::Cell<Option<VideoRegion>>,
-    timeline: std::cell::OnceCell<std::cell::RefCell<Option<timeline::Timeline>>>,
     pub caption_height: f32,
     pub pcm_volume: Option<f64>,
 }
@@ -195,35 +245,65 @@ impl Player {
             last_report: Instant::now(),
             opened: Instant::now(),
             last_pointer: window.mouse_position(),
-            last_motion: Instant::now(),
-            controls_visible: !window.is_fullscreen(),
+            controls: ControlsVisibility {
+                last_activity: Instant::now(),
+                fade_start: None,
+            },
+            keyboard_controls: false,
             audio_only: request.audio_only,
             seekable,
             panel_open: false,
-            cutout: Default::default(),
-            timeline: Default::default(),
             caption_height: 0.,
             pcm_volume: None,
         })
+    }
+
+    pub fn wake_controls(&mut self) {
+        self.controls.wake(Instant::now());
+    }
+
+    pub fn use_keyboard_controls(&mut self) {
+        self.keyboard_controls = true;
+        self.wake_controls();
+    }
+
+    pub fn keyboard_controls(&self) -> bool {
+        self.keyboard_controls
+    }
+
+    pub fn pointer_moved(&mut self, pointer: gpui::Point<gpui::Pixels>, window: &Window) -> bool {
+        if self.last_pointer == pointer {
+            return false;
+        }
+        self.last_pointer = pointer;
+        if !gpui::Bounds::new(Default::default(), window.viewport_size()).contains(&pointer) {
+            return false;
+        }
+        let repaint =
+            self.keyboard_controls || self.controls.last_activity.elapsed() >= CONTROLS_IDLE;
+        self.keyboard_controls = false;
+        self.wake_controls();
+        repaint
+    }
+
+    pub fn controls_opacity(&mut self, interacting: bool, animate: bool, window: &Window) -> f32 {
+        let pinned = interacting
+            || self.panel_open
+            || self.audio_only
+            || self.status.paused
+            || !self.status.ready;
+        let opacity = self.controls.opacity(Instant::now(), pinned, animate);
+        if self.controls.fade_start.is_some() && opacity > 0. {
+            window.request_animation_frame();
+        }
+        opacity
     }
 
     pub fn poll(&mut self, window: &Window) -> Result<()> {
         if let Some(refresh) = &mut self.refresh {
             refresh.update(self.surface.0, window.is_fullscreen());
         }
-        let pointer = window.mouse_position();
-        if pointer != self.last_pointer {
-            self.last_pointer = pointer;
-            self.last_motion = Instant::now();
-        }
-        let over_controls = pointer.y >= window.viewport_size().height - gpui::px(CONTROLS_HEIGHT)
-            && pointer.y <= window.viewport_size().height
-            && pointer.x >= gpui::px(0.)
-            && pointer.x <= window.viewport_size().width;
-        self.controls_visible = self.panel_open
-            || !window.is_fullscreen()
-            || (over_controls
-                && (self.controls_visible || self.last_motion.elapsed() < Duration::from_secs(2)));
+        self.pointer_moved(window.mouse_position(), window);
         let size = dimensions(window);
         if self.size != size {
             unsafe {
@@ -294,111 +374,6 @@ impl Player {
         Ok(())
     }
 
-    pub fn show_timeline(
-        &self,
-        w: &Window,
-        visible: bool,
-        progress: f32,
-        elapsed: &str,
-        remaining: &str,
-    ) -> bool {
-        if !visible {
-            if let Some(cell) = self.timeline.get()
-                && let Some(layer) = cell.borrow_mut().as_mut()
-            {
-                layer.hide();
-            }
-            return false;
-        }
-        // The previous player may still own the window's composition target
-        // while its replacement is opening. Acquire it on first presentation.
-        let cell = self.timeline.get_or_init(|| {
-            std::cell::RefCell::new(
-                parent(w)
-                    .and_then(timeline::Timeline::new)
-                    .map_err(|e| eprintln!("Seek overlay unavailable: {e:#}"))
-                    .ok(),
-            )
-        });
-        let mut layer = cell.borrow_mut();
-        let Some(overlay) = layer.as_mut() else {
-            return false;
-        };
-        let scale = w.scale_factor();
-        let y = ((f32::from(w.viewport_size().height) - CONTROLS_HEIGHT) * scale).round() as i32;
-        let width = (f32::from(w.viewport_size().width) * scale).round() as i32;
-        match overlay.show(width, y, scale, progress, elapsed, remaining) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("Seek overlay unavailable: {e:#}");
-                layer.take();
-                false
-            }
-        }
-    }
-
-    /// Leave the video at its natural viewport size. Expose only opaque GPUI
-    /// elements and the lower button row underneath the video child window.
-    pub fn overlay_cutouts(
-        &self,
-        holes: [Option<(gpui::Bounds<gpui::Pixels>, f32)>; 3],
-        reserved: f32,
-        scale: f32,
-    ) {
-        use windows::Win32::Graphics::Gdi::*;
-        let device = |v: gpui::Pixels| (f32::from(v) * scale).round() as i32;
-        let holes = holes.map(|rect| {
-            rect.map(|(b, r)| {
-                [
-                    device(b.left()),
-                    device(b.top()),
-                    device(b.right()),
-                    device(b.bottom()),
-                    (2. * r * scale).round() as i32,
-                ]
-            })
-        });
-        let geometry =
-            (reserved > 0. || holes.iter().any(Option::is_some)).then_some(VideoRegion {
-                width: self.size.0,
-                bottom: self.size.1 - (reserved * scale).round() as i32,
-                holes,
-            });
-        if self.cutout.get() == geometry {
-            return;
-        }
-        unsafe {
-            let Some(region) = geometry else {
-                if SetWindowRgn(self.surface.0, None, true) != 0 {
-                    self.cutout.set(None);
-                }
-                return;
-            };
-            let visible = CreateRectRgn(0, 0, region.width, region.bottom);
-            if visible.is_invalid() {
-                return;
-            }
-            for [x, y, right, bottom, diameter] in region.holes.into_iter().flatten() {
-                let hole = CreateRoundRectRgn(x, y, right + 1, bottom + 1, diameter, diameter);
-                let ok = !hole.is_invalid()
-                    && CombineRgn(Some(visible), Some(visible), Some(hole), RGN_DIFF) != RGN_ERROR;
-                if !hole.is_invalid() {
-                    let _ = DeleteObject(hole.into());
-                }
-                if !ok {
-                    let _ = DeleteObject(visible.into());
-                    return;
-                }
-            }
-            // SetWindowRgn takes ownership on success.
-            if SetWindowRgn(self.surface.0, Some(visible), true) != 0 {
-                self.cutout.set(geometry);
-            } else {
-                let _ = DeleteObject(visible.into());
-            }
-        }
-    }
-
     pub fn subtitle_delay(&self, seconds: f64) -> Result<()> {
         if let Engine::Mpv(p) = &self.engine {
             p.set_number("sub-delay", seconds)?;
@@ -418,6 +393,27 @@ impl Player {
     }
     pub fn mpv(&self) -> bool {
         matches!(self.engine, Engine::Mpv(_))
+    }
+    pub fn shader(&self) -> Option<&Shader> {
+        match &self.engine {
+            Engine::Mpv(p) if !self.audio_only => Some(&p.shader),
+            _ => None,
+        }
+    }
+    pub fn set_shader(&mut self, shader: Shader) -> Result<()> {
+        match &mut self.engine {
+            Engine::Mpv(p) if !self.audio_only => p.set_shader(shader),
+            _ => anyhow::bail!("Shaders require mpv video playback."),
+        }
+    }
+    pub fn take_shader_error(&mut self) -> Option<String> {
+        match &mut self.engine {
+            Engine::Mpv(p) => p.shader_error.take(),
+            _ => None,
+        }
+    }
+    pub fn opened_at(&self) -> Instant {
+        self.opened
     }
     pub fn supports_speed(&self, rate: f64) -> bool {
         match &self.engine {

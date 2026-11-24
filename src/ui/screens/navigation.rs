@@ -185,9 +185,9 @@ impl Library {
                     .on_click(cx.listener(|s, _, w, cx| s.navigate(Screen::Discover, w, cx))),
             );
         let mut overflow = Vec::new();
-        // Reserve the home link, More and the three utility buttons before fitting library names.
+        // Reserve the home link, More and the utility buttons before fitting library names.
         // Budget for the floating width even while docked to keep the shortcuts in place.
-        let mut remaining = width - 2. * (inset + margin + 1.) - 112. - 76. - 3. * 36. - 32.;
+        let mut remaining = width - 2. * (inset + margin + 1.) - 112. - 76. - 4. * 36. - 36.;
         for (i, link) in tabs.into_iter().enumerate() {
             // Keep the library names legible on small windows. The two fixed shortcuts have distinct icons.
             let show_name = width >= 900. || i >= 2;
@@ -271,7 +271,7 @@ impl Library {
             Link::new(
                 "Search",
                 "nav/search",
-                Screen::Search(self.search.read(cx).value().trim().to_owned()),
+                Screen::Search(String::new()),
                 matches!(section, Screen::Search(_)),
             ),
             Link::new(
@@ -284,10 +284,21 @@ impl Library {
                 "Settings",
                 "nav/settings",
                 Screen::Settings(SettingsPage::Overview),
-                matches!(section, Screen::Settings(_)),
+                matches!(section, Screen::Settings(page) if *page != SettingsPage::Profiles),
+            ),
+            Link::new(
+                "Profiles",
+                "nav/profiles",
+                Screen::Settings(SettingsPage::Profiles),
+                matches!(section, Screen::Settings(SettingsPage::Profiles)),
             ),
         ] {
-            bar = bar.child(link.button(link.glyph.into(), 36., false, cx));
+            bar = bar.child(
+                link.button(link.glyph.into(), 36., false, cx)
+                    .when(matches!(link.screen, Screen::Search(_)), |b| {
+                        b.track_focus(&self.search_link_focus)
+                    }),
+            );
         }
         // Programmatic keyboard/Back scrolls can settle in prepaint, after render read the handle.
         bar.child(

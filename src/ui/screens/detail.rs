@@ -12,7 +12,7 @@ pub(super) fn detail_tool(item: &Item, name: &'static str, glyph: &'static str) 
     }
 }
 
-fn episode_timing(ep: &Item) -> (Option<String>, Option<f32>) {
+pub(super) fn episode_timing(ep: &Item) -> (Option<String>, Option<f32>) {
     let Some(duration) = ep.run_time_ticks.filter(|n| *n > 0) else {
         return (None, None);
     };
@@ -188,8 +188,7 @@ impl Library {
                     .left(px(inset))
                     .top(px(NAV_CLEARANCE))
                     .child(
-                        glyph_button("Back", BACK)
-                            .bg(rgba(0x111216b0))
+                        artwork_control(glyph_button("Back", BACK))
                             .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                     ),
             );

@@ -8,6 +8,7 @@ mod detail;
 use detail::detail_tool;
 mod discover;
 pub(super) use discover::{featured_titles, marquee_art};
+mod controller_search;
 mod editor;
 mod explore;
 mod format_strip;
@@ -16,15 +17,20 @@ mod live;
 mod music;
 mod navigation;
 mod options;
+mod search;
+pub(super) use controller_search::SearchKeyboard;
 mod settings;
+mod settings_navigation;
+pub(super) use search::{SearchState, search_grid};
 mod similar;
 pub(super) use settings::SettingsPage;
+pub(super) use settings_navigation::SettingsNavigation;
 mod player_chrome;
 pub(super) use player_chrome::PREVIEW_WIDTH;
 mod player_menu;
 use super::artwork::background;
 use super::*;
-use crate::{jellyfin::ArtKind, player::CONTROLS_HEIGHT, preferences::PosterSize};
+use crate::{jellyfin::ArtKind, preferences::PosterSize};
 use gpui_component::tooltip::Tooltip;
 
 const BG: u32 = 0x0e0f12;
@@ -96,6 +102,16 @@ fn tip(button: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
 fn glyph_button(id: &'static str, code: &'static str) -> Stateful<Div> {
     icon_button(id, icon(code, 17.))
 }
+const ART_CONTROL_BG: u32 = 0x111418df;
+
+fn artwork_control(button: Stateful<Div>) -> Stateful<Div> {
+    button
+        .bg(rgba(ART_CONTROL_BG))
+        .text_color(rgb(0xffffff))
+        .border_1()
+        .border_color(rgba(0xffffff40))
+}
+
 fn icon_button(id: &'static str, glyph: Div) -> Stateful<Div> {
     tip(
         div()
@@ -465,35 +481,39 @@ impl Library {
                 .group_hover("media-card", |s| s.border_color(rgb(LIME))),
         );
         if continued {
-            let info = item.clone();
+            let button = div()
+                .id("continue-actions")
+                .size(px(28.))
+                .rounded_full()
+                .bg(rgba(0x101513ed))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .child(icon("\u{e712}", 16.))
+                .focusable()
+                .tab_stop(true)
+                .when(self.popup_menu.is_none(), |d| {
+                    d.tooltip(|w, cx| Tooltip::new("More actions").build(w, cx))
+                })
+                .when(
+                    !selected && !self.popup_menu.as_ref().is_some_and(|(key, _)| key == id),
+                    |d| d.opacity(0.).group_hover("media-card", |d| d.opacity(1.)),
+                )
+                .focus(|d| d.opacity(1.).border_1().border_color(rgb(LIME)));
             picture = picture.child(
-                div()
-                    .id("continue-details")
-                    .absolute()
-                    .right(px(8.))
-                    .top(px(8.))
-                    .size(px(28.))
-                    .rounded_full()
-                    .bg(rgba(0x101513df))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .child(icon("\u{e946}", 15.))
-                    .focusable()
-                    .tab_stop(true)
-                    .tooltip(|w, cx| Tooltip::new("Title details").build(w, cx))
-                    .when(!selected, |d| {
-                        d.opacity(0.).group_hover("media-card", |d| d.opacity(1.))
-                    })
-                    .focus(|d| d.opacity(1.).border_1().border_color(rgb(LIME)))
-                    .on_click(cx.listener(move |s, _, w, cx| {
-                        cx.stop_propagation();
-                        s.open_item(info.clone(), w, cx);
-                    })),
+                self.popup_trigger(
+                    id.clone(),
+                    button,
+                    discover::continue_menu(item.clone()),
+                    cx,
+                )
+                .absolute()
+                .right(px(8.))
+                .top(px(8.)),
             );
         }
-        let format_width = if unplayed.is_some() {
+        let format_width = if continued || unplayed.is_some() {
             width - 28.
         } else {
             width
@@ -649,43 +669,6 @@ impl Library {
         row
     }
 
-    fn grid(&self, w: &Window, cx: &mut Context<Self>, empty: &'static str) -> Stateful<Div> {
-        let layout = CatalogGrid::for_window(w);
-        let mut grid = div()
-            .id("catalog-grid")
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .px(px(PAD))
-            .track_scroll(&self.state.scroll)
-            .overflow_y_scroll();
-        if let Some(page) = &self.state.page
-            && !page.items.is_empty()
-        {
-            for (row, chunk) in page.items.chunks(layout.columns).enumerate() {
-                let mut line = div().flex().gap(px(CATALOG_GAP)).pb(px(2.));
-                for (col, item) in chunk.iter().enumerate() {
-                    let index = row * layout.columns + col;
-                    line = line.child(self.card(
-                        item,
-                        layout.card_width,
-                        CardLayout::Catalog {
-                            poster: layout.poster,
-                        },
-                        self.keyboard && self.focus.is_focused(w) && self.state.selection == index,
-                        ("poster", index).into(),
-                        cx,
-                    ));
-                }
-                grid = grid.child(line);
-            }
-            grid = grid.child(self.paging(cx));
-        } else {
-            grid = grid.child(self.empty(empty));
-        }
-        grid
-    }
-
     fn change_filter(
         &mut self,
         edit: impl FnOnce(&mut CatalogQuery),
@@ -702,51 +685,6 @@ impl Library {
         self.state.page = None;
         self.state.scroll = ScrollHandle::new();
         self.load(w, cx);
-    }
-
-    fn search_view(&self, term: &str, w: &Window, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(title("Search", 26.))
-                    .child(
-                        div().flex().gap_2().children(
-                            [(false, "Titles"), (true, "People")].into_iter().map(
-                                |(people, name)| {
-                                    pill(name, name, None, self.state.people_search == people)
-                                        .on_click(cx.listener(move |s, _, w, cx| {
-                                            if s.state.people_search != people {
-                                                s.history.clear_forward();
-                                            }
-                                            s.state.people_search = people;
-                                            s.state.offset = 0;
-                                            s.state.page = None;
-                                            s.load(w, cx);
-                                        }))
-                                },
-                            ),
-                        ),
-                    )
-                    .child(Input::new(&self.search).prefix(icon(SEARCH, 16.))),
-            )
-            .child(self.grid(
-                w,
-                cx,
-                if term.is_empty() {
-                    "Search your Jellyfin library."
-                } else {
-                    "No matching titles."
-                },
-            ))
     }
 
     fn basic_detail_header(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
@@ -818,8 +756,7 @@ impl Library {
                 .child(details)
                 .child(
                     div().absolute().left(px(16.)).top(px(NAV_CLEARANCE)).child(
-                        glyph_button("Back", BACK)
-                            .bg(rgba(0x11121699))
+                        artwork_control(glyph_button("Back", BACK))
                             .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                     ),
                 ),
@@ -827,6 +764,21 @@ impl Library {
     }
 
     fn secondary_actions(&self, item: &Item, mut actions: Div, cx: &mut Context<Self>) -> Div {
+        let resume_item = if item.kind == "Series" {
+            self.state.series_target.as_ref()
+        } else {
+            Some(item)
+        };
+        if let Some(target) = resume_item.filter(|i| i.playable() && i.position() > 0) {
+            let target = target.clone();
+            actions = actions.child(
+                pill("restart-title", "Play from beginning", Some(REFRESH), false).on_click(
+                    cx.listener(move |s, _, w, cx| {
+                        s.play_item_at(target.clone(), Some(0.), w, cx);
+                    }),
+                ),
+            );
+        }
         if item.playable() {
             let watched = item.user_data.as_ref().and_then(|u| u.played) == Some(true);
             actions = actions.child(
@@ -1220,6 +1172,10 @@ impl Library {
                 ))
                 .child(title(code.clone(), 46.))
                 .child(
+                    pill("pair-password", "Use username and password", None, false)
+                        .on_click(cx.listener(|s, _, w, cx| s.show_password_sign_in(w, cx))),
+                )
+                .child(
                     pill("cancel", "Cancel", None, false)
                         .bg(rgb(ACTIVE))
                         .on_click(cx.listener(|s, _, w, cx| s.cancel_pairing(w, cx))),
@@ -1228,22 +1184,57 @@ impl Library {
             panel = panel
                 .child(title("Connect to Jellyfin", 28.))
                 .child(label("Server address", 14., MUTED))
-                .child(Input::new(&self.address))
-                .child(
-                    pill(
-                        "connect",
-                        if self.busy {
-                            "Connecting…"
-                        } else {
-                            "Get pairing code"
-                        },
-                        None,
-                        true,
+                .child(Input::new(&self.address).disabled(self.busy));
+            if let Some(form) = &self.password_sign_in {
+                panel = panel
+                    .child(label("Username", 14., MUTED))
+                    .child(Input::new(&form.username).disabled(self.busy))
+                    .child(label("Password", 14., MUTED))
+                    .child(Input::new(&form.password).disabled(self.busy))
+                    .child(
+                        pill(
+                            "password-submit",
+                            if self.busy {
+                                "Signing in…"
+                            } else {
+                                "Sign in"
+                            },
+                            None,
+                            true,
+                        )
+                        .on_click(cx.listener(|s, _, w, cx| s.sign_in_with_password(w, cx))),
                     )
-                    .on_click(cx.listener(|s, _, w, cx| s.connect(w, cx))),
-                );
+                    .child(
+                        pill("password-back", "Back", None, false).on_click(cx.listener(
+                            |s, _, w, cx| {
+                                s.cancel_pairing(w, cx);
+                                s.message.clear();
+                            },
+                        )),
+                    );
+            } else {
+                panel = panel
+                    .child(
+                        pill(
+                            "connect",
+                            if self.busy {
+                                "Connecting…"
+                            } else {
+                                "Get pairing code"
+                            },
+                            None,
+                            true,
+                        )
+                        .on_click(cx.listener(|s, _, w, cx| s.connect(w, cx))),
+                    )
+                    .child(
+                        pill("use-password", "Use username and password", None, false)
+                            .bg(rgb(ACTIVE))
+                            .on_click(cx.listener(|s, _, w, cx| s.show_password_sign_in(w, cx))),
+                    );
+            }
         }
-        if self.code.is_none() {
+        if self.code.is_none() && self.password_sign_in.is_none() {
             panel = panel.child(pill("detect", "Find local servers", None, false).bg(rgb(ACTIVE))
                 .on_click(cx.listener(|s, _, w, cx| {
                     if !s.busy {
@@ -1316,7 +1307,6 @@ impl Render for Library {
             .relative()
             .flex()
             .flex_col()
-            .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .font_family("Segoe UI")
             .track_focus(&self.focus)
@@ -1324,16 +1314,57 @@ impl Render for Library {
             .on_key_down(cx.listener(Self::key))
             .child(Self::mouse_navigation(cx))
             .children(self.smooth_scrolling(w, cx));
+        let chrome_opacity = self
+            .player
+            .as_mut()
+            .filter(|_| !self.controls.mini)
+            .map(|p| {
+                let rail_focused = p.keyboard_controls() && self.menu_focus.timeline.is_focused(w);
+                let interacting = self.scrub.is_some()
+                    || self.controls.hover.is_some()
+                    || self.controls.volume_hovered
+                    || rail_focused;
+                p.controls_opacity(interacting, self.controls.animate_chrome, w)
+            });
         if self.player.is_some() {
-            self.load_trickplay(w, cx);
+            self.load_trickplay(chrome_opacity.is_some_and(|a| a > 0.), w, cx);
             self.load_artwork(w, cx);
         } else if self.artwork.trickplay.active() {
             self.artwork.trickplay.clear(w, cx);
         }
         if let Some(p) = &self.player
-            && !self.controls.mini
+            && let Some(opacity) = chrome_opacity
         {
-            return self.playback_screen(root, p, w, cx);
+            self.state.search.restore_after_playback =
+                matches!(self.state.screen, Screen::Search(_));
+            if opacity == 0.
+                && !self.focus.is_focused(w)
+                && self.credits_prompt().is_none()
+                && w.is_window_active()
+            {
+                self.focus.focus(w);
+            }
+            let root = root
+                .key_context(PLAYER_KEYS)
+                .on_action(
+                    cx.listener(|s, _: &NextPlayerControl, w, cx| s.step_player_focus(true, w, cx)),
+                )
+                .on_action(cx.listener(|s, _: &PreviousPlayerControl, w, cx| {
+                    s.step_player_focus(false, w, cx)
+                }))
+                .on_mouse_move(cx.listener(|s, e: &MouseMoveEvent, w, cx| {
+                    if s.player
+                        .as_mut()
+                        .is_some_and(|p| p.pointer_moved(e.position, w))
+                    {
+                        cx.notify();
+                    }
+                }));
+            return self.playback_screen(root, p, w, opacity, cx);
+        }
+        let root = root.bg(rgb(BG));
+        if std::mem::take(&mut self.state.search.restore_after_playback) {
+            self.state.search.restore_focus(w);
         }
         if self.state.reload_series_target && !self.busy && self.message.is_empty() {
             self.state.reload_series_target = false;
@@ -1356,6 +1387,7 @@ impl Render for Library {
             self.load_card_formats(w, cx);
             self.state.wall.needs_prefetch = self.artwork.loading() || self.formats.loading();
         }
+        self.load_search_target(w, cx);
         self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
         self.load_similar(w, cx);
@@ -1382,7 +1414,7 @@ impl Render for Library {
                 Screen::Settings(page) => self.settings(*page, cx),
                 Screen::Explore | Screen::ExploreTitle(_) => self.explore_view(cx),
                 Screen::Anime | Screen::AnimeTitle(_) => self.anime_view(cx),
-                Screen::Copies { item, play } => self.copy_picker(item, *play, cx),
+                Screen::Copies { item, action } => self.copy_picker(item, *action, cx),
                 Screen::Downloads => self.download_view(cx),
             }
         };

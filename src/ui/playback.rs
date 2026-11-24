@@ -2,7 +2,7 @@ use super::captions::Captions;
 use super::*;
 use crate::{
     jellyfin::{MediaChoice, Segment},
-    preferences,
+    preferences::{self, Shader},
 };
 use std::collections::VecDeque;
 
@@ -12,6 +12,7 @@ pub(super) enum PlayerMenu {
     Settings,
     Speed,
     Zoom,
+    Shaders,
     Quality,
     Timer,
     AudioSync,
@@ -27,7 +28,11 @@ pub(super) struct MenuFocus {
     pub scope: FocusHandle,
     pub current: FocusHandle,
     pub close: FocusHandle,
-    pub launchers: [FocusHandle; 4],
+    launchers: [FocusHandle; 3],
+    pub volume: FocusHandle,
+    pub timeline: FocusHandle,
+    pub play_pause: FocusHandle,
+    pub fullscreen: FocusHandle,
     pub next: FocusHandle,
     pub credits: FocusHandle,
     pub rows: std::cell::RefCell<Vec<FocusHandle>>,
@@ -45,6 +50,10 @@ impl MenuFocus {
             current: cx.focus_handle(),
             close: cx.focus_handle(),
             launchers: std::array::from_fn(|_| cx.focus_handle()),
+            volume: cx.focus_handle(),
+            timeline: cx.focus_handle(),
+            play_pause: cx.focus_handle(),
+            fullscreen: cx.focus_handle(),
             next: cx.focus_handle(),
             credits: cx.focus_handle(),
             rows: Default::default(),
@@ -60,7 +69,6 @@ impl MenuFocus {
         &self.launchers[match page {
             PlayerMenu::Subtitles => 1,
             PlayerMenu::Audio => 2,
-            PlayerMenu::Chapters => 3,
             _ => 0,
         }]
     }
@@ -85,6 +93,8 @@ pub(super) struct Controls {
     pub source: String,
     pub choice: MediaChoice,
     pub hover: Option<f32>,
+    pub volume_hovered: bool,
+    pub animate_chrome: bool,
     pub remote_scrub: bool,
     pub lyric_scroll: ScrollHandle,
     pub lyric_line: Option<usize>,
@@ -233,6 +243,67 @@ impl Server {
 }
 
 impl Library {
+    pub(super) fn select_shader(&mut self, shader: Shader, cx: &mut Context<Self>) {
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        match player.set_shader(shader.clone()) {
+            Ok(()) => {
+                if let Shader::Custom(path) = &shader
+                    && !self.prefs.mpv.custom_shaders.contains(path)
+                {
+                    self.prefs.mpv.custom_shaders.push(path.clone());
+                }
+                self.prefs.mpv.shader = shader;
+                self.controls.warning.clear();
+                self.save_preferences(cx);
+            }
+            Err(e) => self.controls.warning = format!("{e:#}"),
+        }
+        cx.notify();
+    }
+
+    pub(super) fn import_shader(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(player) = self.player.as_ref().filter(|p| p.shader().is_some()) else {
+            return;
+        };
+        let opened = player.opened_at();
+        let selected = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Add an mpv shader".into()),
+        });
+        cx.spawn_in(w, async move |view, cx| {
+            let result: Result<Option<Shader>> = async {
+                let Some(path) = selected.await??.and_then(|paths| paths.into_iter().next()) else {
+                    return Ok(None);
+                };
+                cx.background_executor()
+                    .spawn(async move {
+                        validate_shader_file(&path)?;
+                        Ok(Some(Shader::Custom(path)))
+                    })
+                    .await
+            }
+            .await;
+            let _ = view.update_in(cx, |s, _, cx| {
+                if !s.player.as_ref().is_some_and(|p| p.opened_at() == opened) {
+                    return;
+                }
+                match result {
+                    Ok(Some(shader)) => s.select_shader(shader, cx),
+                    Ok(None) => {}
+                    Err(e) => {
+                        s.controls.warning = format!("Could not add the shader. {e:#}");
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn load_preferences(&mut self) {
         self.formats.clear();
         let result = self
@@ -248,6 +319,12 @@ impl Library {
                 self.message = format!("Could not read playback preferences. {e}");
             }
         }
+        self.recent_searches = self
+            .server
+            .as_ref()
+            .and_then(|s| s.profile_path().ok())
+            .and_then(|p| preferences::load(&p.join("recent-searches.json")).ok())
+            .unwrap_or_default();
         self.rotate = self.prefs.rotate;
         self.open_downloads();
         self.restore_seerr();
@@ -623,6 +700,20 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !item.copies.is_empty() {
+            self.navigate(
+                Screen::Copies {
+                    item: Box::new(item),
+                    action: CopyAction::Play { position },
+                },
+                w,
+                cx,
+            );
+            return;
+        }
+        if !self.adopt_server(&item, w, cx) {
+            return;
+        }
         if self.player.as_ref().is_some_and(|p| p.audio_only) {
             self.stop();
         }
@@ -632,6 +723,32 @@ impl Library {
         self.controls = Controls::default();
         self.begin(item, position, w, cx);
     }
+}
+
+fn validate_shader_file(path: &std::path::Path) -> Result<()> {
+    use std::io::Read;
+    const MAX_SIZE: u64 = 32 * 1024 * 1024;
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    anyhow::ensure!(
+        path.is_absolute()
+            && (extension.eq_ignore_ascii_case("glsl") || extension.eq_ignore_ascii_case("hook")),
+        "Choose an mpv .glsl or .hook file."
+    );
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(MAX_SIZE + 1)
+        .read_to_string(&mut text)?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_SIZE,
+        "The shader file exceeds 32 MB."
+    );
+    anyhow::ensure!(
+        text.trim_start_matches('\u{feff}')
+            .lines()
+            .any(|line| line.starts_with("//!HOOK ")),
+        "The file does not contain an mpv shader hook."
+    );
+    Ok(())
 }
 
 fn in_credits(position: f64, duration: f64, segments: &[Segment]) -> bool {

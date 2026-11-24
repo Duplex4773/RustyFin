@@ -1,7 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
-use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use url::Url;
@@ -368,7 +368,19 @@ impl Server {
             "Enter an HTTP or HTTPS server address with an optional base path."
         );
         base.path_segments_mut().unwrap().pop_if_empty().push("");
-        let http = Client::builder().timeout(Duration::from_secs(20)).build()?;
+        let http = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if let Some(first) = attempt.previous().first()
+                    && first.path().ends_with("/Users/AuthenticateByName")
+                    && first.origin() != attempt.url().origin()
+                {
+                    // A 307 or 308 can replay the password in the request body.
+                    return attempt.stop();
+                }
+                reqwest::redirect::Policy::limited(10).redirect(attempt)
+            }))
+            .build()?;
         Ok(Self {
             base,
             http,
@@ -410,8 +422,36 @@ impl Server {
         self.request(reqwest::Method::POST, path)
     }
 
-    pub fn pair(&self) -> Result<Pairing> {
-        read(self.post(&["QuickConnect", "Initiate"])).context("Quick Connect could not start. Check the server address and that Quick Connect is enabled.")
+    pub fn pair(&self) -> Result<Option<Pairing>> {
+        let response = self
+            .post(&["QuickConnect", "Initiate"])
+            .send()
+            .map_err(|e| e.without_url())
+            .context("Could not reach Jellyfin for Quick Connect.")?;
+        if matches!(response.status().as_u16(), 401 | 403 | 404 | 405 | 501) {
+            return Ok(None);
+        }
+        read_response(response)
+            .map(Some)
+            .context("Quick Connect could not start. Check the server address.")
+    }
+
+    pub fn authenticate_by_name(&self, username: &str, password: &str) -> Result<Account> {
+        let response = self
+            .post(&["Users", "AuthenticateByName"])
+            .json(&json!({ "Username": username, "Pw": password }))
+            .send()
+            .map_err(|e| e.without_url())
+            .context("Could not reach Jellyfin to sign in.")?;
+        ensure!(
+            !response.status().is_redirection(),
+            "Sign-in was redirected. Enter the final Jellyfin server address."
+        );
+        ensure!(
+            !matches!(response.status().as_u16(), 401 | 403),
+            "Jellyfin declined sign-in. Check your username and password or contact your server administrator."
+        );
+        self.authenticated_account(response)
     }
 
     pub fn claim(&self, secret: &str) -> Result<Option<Account>> {
@@ -427,6 +467,15 @@ impl Server {
         if !status.authenticated {
             return Ok(None);
         }
+        let response = self
+            .post(&["Users", "AuthenticateWithQuickConnect"])
+            .json(&json!({"Secret": secret}))
+            .send()
+            .map_err(|e| e.without_url())?;
+        self.authenticated_account(response).map(Some)
+    }
+
+    fn authenticated_account(&self, response: Response) -> Result<Account> {
         #[derive(Deserialize)]
         #[serde(rename_all = "PascalCase")]
         struct Identity {
@@ -439,17 +488,14 @@ impl Server {
             user: Identity,
             access_token: String,
         }
-        let auth: Auth = read(
-            self.post(&["Users", "AuthenticateWithQuickConnect"])
-                .json(&json!({"Secret": secret})),
-        )?;
-        Ok(Some(Account {
+        let auth: Auth = read_response(response)?;
+        Ok(Account {
             server: self.base.to_string(),
             device: self.device.clone(),
             user: auth.user.id,
             username: auth.user.name,
             token: auth.access_token,
-        }))
+        })
     }
 
     pub fn playback(&self, item: &Item, choice: &MediaChoice) -> Result<PlayRequest> {
@@ -591,10 +637,11 @@ impl Server {
 }
 
 fn read<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
-    let response = request
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.without_url())?;
+    read_response(request.send().map_err(|e| e.without_url())?)
+}
+
+fn read_response<T: DeserializeOwned>(response: Response) -> Result<T> {
+    let response = response.error_for_status().map_err(|e| e.without_url())?;
     Ok(response.json().map_err(|e| e.without_url())?)
 }
 
@@ -602,6 +649,89 @@ fn read<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn disabled_quick_connect_falls_back_to_password_authentication() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/jellyfin/", listener.local_addr().unwrap());
+        let server = Server::new(&base, "test-device".into()).unwrap();
+        let fake_api = std::thread::spawn(move || {
+            let password_endpoint = "/jellyfin/Users/AuthenticateByName";
+            let account = r#"{"User":{"Id":"user-id","Name":"Viewer"},"AccessToken":"token"}"#;
+            for (endpoint, status, reply, password) in [
+                (
+                    "/jellyfin/QuickConnect/Initiate",
+                    "401 Unauthorized",
+                    "",
+                    None,
+                ),
+                (password_endpoint, "401 Unauthorized", "", Some("incorrect")),
+                (password_endpoint, "200 OK", account, Some("")),
+                (
+                    password_endpoint,
+                    "307 Temporary Redirect",
+                    "",
+                    Some("another"),
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&socket);
+                let mut headers = String::new();
+                while !headers.ends_with("\r\n\r\n") {
+                    assert_ne!(reader.read_line(&mut headers).unwrap(), 0);
+                }
+                assert!(headers.starts_with(&format!("POST {endpoint} HTTP/")));
+                assert!(headers.contains(r#"DeviceId="test-device""#));
+                if let Some(password) = password {
+                    let length = headers
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .unwrap()
+                        .1
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"Username": "Viewer", "Pw": password})
+                    );
+                }
+                let redirect = if status.starts_with("307") {
+                    "Location: http://127.0.0.1:1/other\r\n"
+                } else {
+                    ""
+                };
+                write!(socket, "HTTP/1.1 {status}\r\n{redirect}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            }
+        });
+        assert!(server.pair().unwrap().is_none());
+        let denied = server
+            .authenticate_by_name("Viewer", "incorrect")
+            .err()
+            .unwrap();
+        assert!(denied.to_string().contains("declined sign-in"));
+        let account = server.authenticate_by_name("Viewer", "").unwrap();
+        assert_eq!(account.user, "user-id");
+        assert_eq!(account.username.as_deref(), Some("Viewer"));
+        assert_eq!(account.server, base);
+        assert_eq!(account.device, "test-device");
+        assert_eq!(account.token, "token");
+        let redirected = server
+            .authenticate_by_name("Viewer", "another")
+            .err()
+            .unwrap();
+        assert!(redirected.to_string().contains("redirected"));
+        fake_api.join().unwrap();
+    }
 
     #[test]
     fn dolby_with_incompatible_audio_requests_only_the_original_file() {

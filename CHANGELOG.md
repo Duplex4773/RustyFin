@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The playback timeline floats over the picture, with separate translucent groups for transport and settings. Hover or focus the timeline to preview a seek while the playhead marks the current time. The title and controls fade together during playback in mpv and the native Dolby Vision player.
+- Switch mpv shaders during playback from **Playback Settings → Shaders**. Presets include FSRCNNX, RAVU Lite AR, ArtCNN and Anime4K. Add a local mpv shader file or select **Off** to restore standard scaling.
+- Fixed an intermittent horizontal line across featured artwork on Discover.
+- Sign in with a Jellyfin username and password when Quick Connect is unavailable, or select password sign-in directly.
+- Home loads Continue Watching and recent additions independently across connected servers. A failed refresh keeps the last loaded titles visible and offers a retry for the affected feed or server. Open Downloads directly when Home is offline.
+- Search has an on-screen keyboard for controllers. Use the D-pad and A to type, X to delete and Start to submit. Settings supports directional navigation and restores focus when you go back.
+- Choose **Play from beginning** from title details or a Continue Watching card’s **More** menu. The choice carries through version selection.
+- Discover’s Refresh, slideshow and shelf controls and the Back buttons on title artwork have a dark backing. Profiles is accessible from the floating navigation bar.
+- On Windows, mpv negotiates HDR with the playback display. The seek bar, previews and menus share a transparent GPUI layer above the video, so showing or hiding controls leaves the video surface intact.
+- Search shows a best match with separate details and playback actions, followed by matching movies, shows, episodes, people, music and videos. Press `/` to search. Recent searches belong to the current profile, and Back restores the query, scroll position and focused result.
+- Continue Watching cards have a **More** menu for title details, opening the series and marking a title watched. Open it with the mouse, Shift+F10 or X on a controller. Selecting the card still starts playback.
+
 - Browse shows the library name and matching title count in a compact toolbar. Choose a sort order directly, remove active filters, or switch between Small, Medium and Large posters. RustyFin remembers the poster size for each profile.
 - Added the Waterline logo to Home and Quick Connect, and the matching fin icon to the Windows app.
 - Library scrolling is smoother on high-refresh displays. The poster grid draws artwork, captions and format strips for the visible rows in fewer layout passes.

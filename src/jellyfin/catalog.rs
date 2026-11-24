@@ -172,7 +172,7 @@ pub struct Shelf {
 
 // Jellyfin can return an in-progress episode in both Resume and NextUp.
 // Keep the in-progress episode even when NextUp points to another episode of the same show.
-fn continue_watching(resume: Vec<Item>, next: Vec<Item>) -> Vec<Item> {
+pub(super) fn continue_watching(resume: Vec<Item>, next: Vec<Item>) -> Vec<Item> {
     let mut seen = HashSet::new();
     let mut unique = |i: &Item| seen.insert(i.series_id.as_ref().unwrap_or(&i.id).clone());
     let mut resume = resume
@@ -455,47 +455,39 @@ impl Server {
         Ok(request)
     }
 
-    pub fn discover(&self) -> Result<Vec<Shelf>> {
+    pub fn home_items(&self, feed: super::federation::HomeFeed) -> Result<Vec<Item>> {
+        use super::federation::HomeFeed;
         let user = self.user_id()?;
         let query = [("userId", user), ("fields", FIELDS), ("limit", "12")];
-        let resume: Page = read(self.get(&["UserItems", "Resume"]).query(&query).query(&[
-            ("mediaTypes", "Video"),
-            ("includeItemTypes", "Movie,Episode,Video"),
-        ]))?;
-        let next: Page = read(self.get(&["Shows", "NextUp"]).query(&query))?;
-        let shows: Page = read(self.get(&["Items"]).query(&[
-            ("userId", user),
-            ("recursive", "true"),
-            ("includeItemTypes", "Series"),
-            ("sortBy", "DateLastContentAdded,DateCreated"),
-            ("sortOrder", "Descending"),
-            (
-                "fields",
-                "DateLastMediaAdded,DateCreated,Genres,Overview,ProviderIds",
-            ),
-            ("limit", "24"),
-        ]))?;
-        let movies = read(self.get(&["Items", "Latest"]).query(&[
-            ("userId", user),
-            ("includeItemTypes", "Movie"),
-            ("groupItems", "false"),
-            ("fields", "DateCreated,Genres,People,Overview,MediaSources"),
-            ("limit", "24"),
-        ]))?;
-        Ok(vec![
-            Shelf {
-                kind: ShelfKind::Continue,
-                items: continue_watching(resume.items, next.items),
-            },
-            Shelf {
-                kind: ShelfKind::RecentTv,
-                items: shows.items,
-            },
-            Shelf {
-                kind: ShelfKind::RecentMovies,
-                items: movies,
-            },
-        ])
+        let request = match feed {
+            HomeFeed::Resume => self.get(&["UserItems", "Resume"]).query(&query).query(&[
+                ("mediaTypes", "Video"),
+                ("includeItemTypes", "Movie,Episode,Video"),
+            ]),
+            HomeFeed::NextUp => self.get(&["Shows", "NextUp"]).query(&query),
+            HomeFeed::RecentTv => self.get(&["Items"]).query(&[
+                ("userId", user),
+                ("recursive", "true"),
+                ("includeItemTypes", "Series"),
+                ("sortBy", "DateLastContentAdded,DateCreated"),
+                ("sortOrder", "Descending"),
+                (
+                    "fields",
+                    "DateLastMediaAdded,DateCreated,Genres,Overview,ProviderIds",
+                ),
+                ("limit", "24"),
+            ]),
+            HomeFeed::RecentMovies => {
+                return read(self.get(&["Items", "Latest"]).query(&[
+                    ("userId", user),
+                    ("includeItemTypes", "Movie"),
+                    ("groupItems", "false"),
+                    ("fields", "DateCreated,Genres,People,Overview,MediaSources"),
+                    ("limit", "24"),
+                ]));
+            }
+        };
+        Ok(read::<Page>(request)?.items)
     }
 
     pub fn set_user_flag(&self, id: &str, favorite: bool, value: bool) -> Result<super::UserData> {
@@ -642,12 +634,27 @@ impl Server {
             })
             .collect())
     }
-    pub fn people(&self, term: &str, offset: usize) -> Result<Page> {
-        read(self.get(&["Persons"]).query(&[
+    pub(super) fn search_group(
+        &self,
+        kinds: &str,
+        term: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Page> {
+        let request = if kinds == "Person" {
+            self.get(&["Persons"])
+        } else {
+            self.get(&["Items"]).query(&[
+                ("recursive", "true"),
+                ("includeItemTypes", kinds),
+                ("fields", FIELDS),
+            ])
+        };
+        read(request.query(&[
             ("userId", self.user_id()?),
             ("searchTerm", term),
             ("startIndex", &offset.to_string()),
-            ("limit", &PAGE_SIZE.to_string()),
+            ("limit", &limit.to_string()),
         ]))
     }
 

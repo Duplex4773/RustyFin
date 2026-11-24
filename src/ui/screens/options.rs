@@ -231,7 +231,12 @@ impl Library {
         view
     }
 
-    pub(super) fn copy_picker(&self, item: &Item, play: bool, cx: &mut Context<Self>) -> Div {
+    pub(super) fn copy_picker(
+        &self,
+        item: &Item,
+        action: CopyAction,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let mut panel = div()
             .flex_1()
             .p_5()
@@ -257,17 +262,25 @@ impl Library {
                         format!("{host} · {} · {}", copy.name, copy.badges().join(" · ")),
                         false,
                     )
-                    .on_click(cx.listener(move |s, _, w, cx| {
-                        if play {
-                            s.play_item(target.clone(), w, cx)
-                        } else {
-                            s.open_item(target.clone(), w, cx)
+                    .on_click(cx.listener(move |s, _, w, cx| match action {
+                        CopyAction::Details => s.open_item(target.clone(), w, cx),
+                        CopyAction::Play { position } => {
+                            s.play_item_at(target.clone(), position, w, cx)
                         }
                     })),
                 ),
             );
         }
         panel
+    }
+    fn settings_choice(
+        &self,
+        cx: &App,
+        id: impl Into<ElementId>,
+        text: impl Into<SharedString>,
+        active: bool,
+    ) -> Stateful<Div> {
+        self.settings_button(choice(id, text, active), cx)
     }
     pub(super) fn display_settings(&self, cx: &mut Context<Self>) -> Div {
         let mut settings = div().flex().flex_col().gap_2();
@@ -280,7 +293,8 @@ impl Library {
             ));
             if hdr.supported {
                 buttons = buttons.child(
-                    choice(
+                    self.settings_choice(
+                        cx,
                         "system-hdr",
                         if hdr.enabled {
                             "Turn Windows HDR off"
@@ -296,17 +310,17 @@ impl Library {
         settings.child(
             buttons
                 .child(
-                    choice("check-display", "Refresh display status", false)
+                    self.settings_choice(cx, "check-display", "Refresh display status", false)
                         .on_click(cx.listener(|s, _, w, cx| s.read_display(w, cx))),
                 )
                 .child(
-                    choice("windows-display", "Windows display settings", false)
+                    self.settings_choice(cx, "windows-display", "Windows display settings", false)
                         .on_click(|_, _, cx| cx.open_url("ms-settings:display")),
                 ),
         )
     }
     pub(super) fn playback_settings(&self, cx: &mut Context<Self>) -> Div {
-        use super::settings::{group, row, rows, toggle};
+        use super::settings::{group, rows, toggle};
         use crate::preferences::Preferences;
         type Flag = fn(&mut Preferences) -> &mut bool;
         let flags: [(_, _, _, _, Flag); 5] = [
@@ -347,18 +361,18 @@ impl Library {
             ),
         ];
         let playback = rows(flags.map(|(glyph, name, description, on, flag)| {
-            row(name, glyph, name, description, toggle(on)).on_click(cx.listener(
-                move |s, _, _, cx| {
+            self.settings_row(cx, name, glyph, name, description, toggle(on))
+                .on_click(cx.listener(move |s, _, _, cx| {
                     let value = flag(&mut s.prefs);
                     *value = !*value;
                     s.save_preferences(cx);
-                },
-            ))
+                }))
         }));
         let mut sizes = choices().child(label("Subtitle size", 15., TEXT));
         for (i, n) in [24, 30, 36, 42, 48].into_iter().enumerate() {
             sizes = sizes.child(
-                choice(
+                self.settings_choice(
+                    cx,
                     ("subtitle-size", i),
                     format!("{n}"),
                     self.prefs.subtitle_size == n,
@@ -369,7 +383,7 @@ impl Library {
                 })),
             );
         }
-        use crate::preferences::{Channels, Shader, SubtitleStyle};
+        use crate::preferences::{Channels, SubtitleStyle};
         let mut channels = choices().child(label("mpv PCM output", 15., TEXT));
         for (i, (value, name)) in [
             (Channels::System, "System layout"),
@@ -380,16 +394,21 @@ impl Library {
         .enumerate()
         {
             channels = channels.child(
-                choice(("output-layout", i), name, self.prefs.mpv.channels == value).on_click(
-                    cx.listener(move |s, _, _, cx| {
-                        s.prefs.mpv.channels = value;
-                        s.save_preferences(cx);
-                    }),
-                ),
+                self.settings_choice(
+                    cx,
+                    ("output-layout", i),
+                    name,
+                    self.prefs.mpv.channels == value,
+                )
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    s.prefs.mpv.channels = value;
+                    s.save_preferences(cx);
+                })),
             );
         }
         let mut audio = group().child(
-            row(
+            self.settings_row(
+                cx,
                 "normalize-pcm",
                 "\u{e995}",
                 "Normalize PCM volume",
@@ -403,7 +422,8 @@ impl Library {
         );
         if self.prefs.mpv.channels == Channels::Stereo {
             audio = audio.child(
-                row(
+                self.settings_row(
+                    cx,
                     "boost-center",
                     "\u{e767}",
                     "Boost center in stereo mix",
@@ -416,24 +436,6 @@ impl Library {
                 })),
             );
         }
-        let mut shaders = choices().child(label("mpv shader", 15., TEXT));
-        for (i, (value, name)) in [
-            (Shader::Off, "Off"),
-            (Shader::Sharpen, "Sharpen"),
-            (Shader::Soften, "Soften"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            shaders = shaders.child(
-                choice(("shader", i), name, self.prefs.mpv.shader == value).on_click(cx.listener(
-                    move |s, _, _, cx| {
-                        s.prefs.mpv.shader = value;
-                        s.save_preferences(cx);
-                    },
-                )),
-            );
-        }
         let mut style = choices().child(label("mpv subtitle style", 15., TEXT));
         for (i, (value, name)) in [
             (SubtitleStyle::Authored, "Original"),
@@ -444,12 +446,16 @@ impl Library {
         .enumerate()
         {
             style = style.child(
-                choice(("caption-style", i), name, self.prefs.mpv.subtitle == value).on_click(
-                    cx.listener(move |s, _, _, cx| {
-                        s.prefs.mpv.subtitle = value;
-                        s.save_preferences(cx);
-                    }),
-                ),
+                self.settings_choice(
+                    cx,
+                    ("caption-style", i),
+                    name,
+                    self.prefs.mpv.subtitle == value,
+                )
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    s.prefs.mpv.subtitle = value;
+                    s.save_preferences(cx);
+                })),
             );
         }
         let options = |choices: Div| {
@@ -465,7 +471,5 @@ impl Library {
             .child(group().child(options(sizes)).child(options(style)))
             .child(super::settings::heading("Audio output"))
             .child(group().child(options(channels)).child(audio))
-            .child(super::settings::heading("Video processing"))
-            .child(group().child(options(shaders)))
     }
 }

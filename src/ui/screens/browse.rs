@@ -55,27 +55,16 @@ impl Library {
         choose: fn(&mut Self, T, &mut Window, &mut Context<Self>),
         cx: &Context<Self>,
     ) -> Div {
-        let open = self.browse_menu.as_ref().filter(|(key, _)| *key == id);
-        let was_open = open.is_some();
-        let toggle = move |s: &mut Self, w: &mut Window, cx: &mut Context<Self>| {
-            if was_open {
-                s.browse_menu = None;
-                cx.notify();
-                return;
-            }
-            let owner = cx.weak_entity();
-            let launcher = w.focused(cx).unwrap_or_else(|| s.focus.clone());
-            let menu = PopupMenu::build(w, cx, |mut menu, w, _| {
-                menu = menu
-                    .action_context(launcher)
-                    .min_w(px(168.))
-                    .max_h((w.viewport_size().height - px(170.)).max(px(100.)))
-                    .scrollable(true);
+        self.popup_trigger(
+            id.into(),
+            trigger.child(icon("\u{e70d}", 9.)),
+            move |mut menu, owner| {
                 for (value, label) in options.clone() {
                     let owner = owner.clone();
                     let checked = value == selected;
                     menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
                         move |_, w, cx| {
+                            cx.stop_propagation();
                             if !checked {
                                 let _ = owner.update(cx, |s, cx| choose(s, value.clone(), w, cx));
                             }
@@ -83,26 +72,32 @@ impl Library {
                     ));
                 }
                 menu
-            });
-            cx.subscribe(&menu, |s, source, _: &DismissEvent, cx| {
-                if s.browse_menu
-                    .as_ref()
-                    .is_some_and(|(_, current)| current == &source)
-                {
-                    s.browse_menu = None;
-                    cx.notify();
-                }
-            })
-            .detach();
-            menu.focus_handle(cx).focus(w);
-            s.browse_menu = Some((id, menu));
-            cx.notify();
+            },
+            cx,
+        )
+    }
+
+    pub(super) fn popup_trigger(
+        &self,
+        id: ElementId,
+        trigger: Stateful<Div>,
+        build: impl Fn(PopupMenu, WeakEntity<Library>) -> PopupMenu + Clone + 'static,
+        cx: &Context<Self>,
+    ) -> Div {
+        let open = self.popup_menu.as_ref().filter(|(key, _)| *key == id);
+        let was_open = open.is_some();
+        let toggle = move |s: &mut Self, w: &mut Window, cx: &mut Context<Self>| {
+            if was_open {
+                s.popup_menu = None;
+                cx.notify();
+            } else {
+                s.show_popup(id.clone(), &build, w, cx);
+            }
         };
         // The menu confirms on key-down and returns focus to this button.
         // Handling activation on key-down also prevents key-up from reopening it.
         let key_toggle = toggle.clone();
         let button = trigger
-            .child(icon("\u{e70d}", 9.))
             .on_key_down(cx.listener(move |s, event: &KeyDownEvent, w, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space")
                     && !event.keystroke.modifiers.modified()
@@ -115,6 +110,7 @@ impl Library {
                 }
             }))
             .on_click(cx.listener(move |s, event: &gpui::ClickEvent, w, cx| {
+                cx.stop_propagation();
                 if matches!(event, gpui::ClickEvent::Mouse(_)) {
                     toggle(s, w, cx);
                 }
@@ -135,6 +131,39 @@ impl Library {
                     ),
                 )
             })
+    }
+
+    pub(super) fn show_popup(
+        &mut self,
+        id: ElementId,
+        build: impl FnOnce(PopupMenu, WeakEntity<Library>) -> PopupMenu,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.weak_entity();
+        let launcher = w.focused(cx).unwrap_or_else(|| self.focus.clone());
+        let menu = PopupMenu::build(w, cx, |menu, w, _| {
+            build(
+                menu.action_context(launcher)
+                    .min_w(px(168.))
+                    .max_h((w.viewport_size().height - px(170.)).max(px(100.)))
+                    .scrollable(true),
+                owner,
+            )
+        });
+        cx.subscribe(&menu, |s, source, _: &DismissEvent, cx| {
+            if s.popup_menu
+                .as_ref()
+                .is_some_and(|(_, current)| current == &source)
+            {
+                s.popup_menu = None;
+                cx.notify();
+            }
+        })
+        .detach();
+        menu.focus_handle(cx).focus(w);
+        self.popup_menu = Some((id, menu));
+        cx.notify();
     }
 
     pub(super) fn browse(

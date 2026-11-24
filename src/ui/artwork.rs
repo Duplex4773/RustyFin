@@ -45,9 +45,12 @@ impl Artwork {
 }
 
 impl Library {
-    pub(super) fn preview_chapter(&self) -> Option<(usize, &crate::jellyfin::Chapter, f64)> {
+    pub(super) fn preview_chapter(
+        &self,
+        w: &Window,
+    ) -> Option<(usize, &crate::jellyfin::Chapter, f64)> {
         let p = self.player.as_ref()?;
-        let frac = self.scrub.or(self.controls.hover)?;
+        let frac = self.seek_preview_fraction(p, w)?;
         let at = frac as f64 * p.status.duration;
         let chapters = self.playing.as_ref()?.chapters.as_ref()?;
         let index = chapters
@@ -68,7 +71,7 @@ impl Library {
         {
             plan.extend(next.landscape());
         }
-        if let Some((i, _, _)) = self.preview_chapter()
+        if let Some((i, _, _)) = self.preview_chapter(w)
             && let Some(item) = &self.playing
         {
             plan.extend(item.art(ArtKind::Chapter(i)));
@@ -134,13 +137,25 @@ impl Library {
                 .poster;
                 plan.extend(self.state.wall.near_items().filter_map(|i| i.art(poster)));
             }
+            Screen::Search(_) => {
+                use crate::jellyfin::federation::SearchGroup;
+                plan.extend(self.state.search.best.as_ref().and_then(Item::landscape));
+                for group in &self.state.search.groups {
+                    let layout = super::screens::search_grid(group.kind, w);
+                    plan.extend(
+                        group.page.items[group.visible(layout.columns)]
+                            .iter()
+                            .filter_map(|item| match group.kind {
+                                SearchGroup::People => item.art(ArtKind::Poster),
+                                SearchGroup::Episodes | SearchGroup::Videos => item.landscape(),
+                                _ => item.art(layout.poster),
+                            }),
+                    );
+                }
+            }
             _ => {
                 if let Some(page) = &self.state.page {
-                    let poster = match self.state.screen {
-                        Screen::Search(_) => super::screens::CatalogGrid::for_window(w).poster,
-                        _ => ArtKind::Poster,
-                    };
-                    plan.extend(page.items.iter().filter_map(|i| i.art(poster)));
+                    plan.extend(page.items.iter().filter_map(|i| i.art(ArtKind::Poster)));
                 }
             }
         }

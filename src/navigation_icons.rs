@@ -84,6 +84,12 @@ const ICONS: &[(&str, &str)] = &[
         ),
     ),
     (
+        "nav/profiles",
+        glyph!(
+            r#"<g fill="none" stroke="black" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="7.5" r="4"/><path d="M3.6 21c.4-4.2 3.5-7 8.4-7s8 2.8 8.4 7"/></g>"#
+        ),
+    ),
+    (
         "nav/settings",
         glyph!(
             r#"<path fill-rule="evenodd" d="m9.5 1.5-.7 2.7-1.5.8-2.7-.7-2.4 4.1 2 2-.1 2.2-1.9 2 2.4 4.2 2.7-.7 1.6 1 .6 2.8h5l.7-2.8 1.6-1 2.7.7 2.4-4.2-2-2v-2.2l2-2-2.4-4.1-2.7.7-1.6-.8-.7-2.7zM12 8.3a3.7 3.7 0 1 1 0 7.4 3.7 3.7 0 1 1 0-7.4z"/>"#

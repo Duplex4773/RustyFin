@@ -39,16 +39,15 @@ fn main() -> anyhow::Result<()> {
             ),
         }
     }
-    // GPUI's default DirectComposition target covers child HWNDs, including
-    // our video surface. Present the UI to the parent HWND so the child is
-    // visible above it. Media Foundation still owns the Dolby Vision surface.
-    // SAFETY: This process-local setting is made before GPUI starts its threads.
-    unsafe { std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1") };
     Application::new()
         .with_assets(navigation_icons::NavigationIcons)
         .run(|cx| {
             gpui_component::init(cx);
+            ui::bind_player_keys(cx);
             Theme::change(ThemeMode::Dark, None, cx);
+            // Browsing pages paint their own background. Leave the root of GPUI's
+            // topmost composition layer clear so it can overlay the video child.
+            Theme::global_mut(cx).background = transparent_black();
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();

@@ -164,7 +164,7 @@ fn circle(
     code: &'static str,
     size: f32,
 ) -> Stateful<Div> {
-    tip(
+    artwork_control(tip(
         div()
             .id(id)
             .size(px(size))
@@ -173,14 +173,11 @@ fn circle(
             .items_center()
             .justify_center()
             .rounded_full()
-            .border_1()
-            .border_color(rgba(0xb3c0b17a))
-            .bg(rgba(0x11161155))
             .cursor_pointer()
             .hover(|d| d.bg(rgb(ACTIVE)))
             .child(icon(code, 13.)),
         name,
-    )
+    ))
 }
 
 impl Library {
@@ -316,13 +313,12 @@ impl Library {
 
     fn marquee_pagination(&self, cx: &mut Context<Self>) -> Div {
         let mut controls = div()
-            .absolute()
-            .bottom(px(2.))
-            .left_0()
-            .right_0()
             .flex()
             .items_center()
-            .justify_center()
+            .rounded_full()
+            .px(px(4.))
+            .bg(rgba(ART_CONTROL_BG))
+            .text_color(rgb(0xffffff))
             .child(
                 glyph_button(
                     if self.rotate {
@@ -360,7 +356,7 @@ impl Library {
                                 .bg(if active {
                                     rgba(0xfffffff2)
                                 } else {
-                                    rgba(0xffffff64)
+                                    rgba(0xffffffaa)
                                 }),
                         ),
                     format!(
@@ -371,7 +367,14 @@ impl Library {
                 .on_click(cx.listener(move |s, _, _, cx| s.set_hero(i, cx))),
             );
         }
-        controls
+        div()
+            .absolute()
+            .bottom(px(2.))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(controls)
     }
 
     fn marquee(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
@@ -407,13 +410,8 @@ impl Library {
             .child(title("Discover", 22.))
             .child(div().flex_1())
             .child(
-                glyph_button("Refresh", REFRESH)
+                artwork_control(glyph_button("Refresh", REFRESH))
                     .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
-            )
-            .child(
-                glyph_button("Account", ACCOUNT).on_click(cx.listener(|s, _, w, cx| {
-                    s.navigate(Screen::Settings(SettingsPage::Overview), w, cx)
-                })),
             );
         let target = item.clone();
         let summary = hero_summary(item);
@@ -511,20 +509,117 @@ impl Library {
             .pb(px(32.))
             .bg(rgb(CHARCOAL));
         scroll.style().restrict_scroll_to_axis = Some(true);
+        let mut header = div().w_full();
+        let unavailable = self.home.unavailable();
         if let Some(item) = self.featured.get(self.hero) {
-            scroll = scroll.child(self.marquee(item, w, cx));
+            header = header.child(self.marquee(item, w, cx));
         } else {
-            scroll = scroll.child(
+            header = header.child(
                 div()
                     .p_5()
                     .child(title("Discover", 24.))
-                    .child(self.empty("Your library has no titles yet."))
-                    .child(
-                        glyph_button("Refresh", REFRESH)
-                            .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
+                    .when(self.home.loading() && !unavailable, |d| {
+                        d.child(label("Loading Home…", 15., MUTED).pt_3())
+                    })
+                    .when(
+                        !unavailable
+                            && !self.home.loading()
+                            && self.home.failures().next().is_none(),
+                        |d| {
+                            d.child(label("No featured movies or shows yet.", 15., MUTED).py_3())
+                                .child(
+                                    pill("browse-home-libraries", "Browse libraries", None, false)
+                                        .on_click(cx.listener(|s, _, w, cx| {
+                                            s.navigate(
+                                                Screen::Library(Tab::Browse, Default::default()),
+                                                w,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                        },
                     ),
             );
         }
+        if unavailable {
+            let message = if self.shelves.is_empty() {
+                "Couldn't load Home from the connected servers."
+            } else {
+                "Couldn't refresh Home. Showing previously loaded titles."
+            };
+            header = header.child(
+                div()
+                    .px(px(GUTTER))
+                    .py_3()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(label(message, 15., TEXT))
+                    .when(!self.home.loading(), |d| {
+                        d.child(
+                            pill("retry-home", "Retry", Some(REFRESH), false)
+                                .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
+                        )
+                    })
+                    .when(self.home.loading(), |d| {
+                        d.child(label("Retrying…", 14., MUTED))
+                    })
+                    .child(
+                        pill("home-downloads", "Open Downloads", None, false).on_click(
+                            cx.listener(|s, _, w, cx| s.navigate(Screen::Downloads, w, cx)),
+                        ),
+                    ),
+            );
+        } else {
+            for (origin, host, failures) in self.home.failures() {
+                let mut notice = div()
+                    .px(px(GUTTER))
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(label(format!("Couldn’t update {host}"), 14., MUTED));
+                if failures.len() == crate::jellyfin::federation::HomeFeed::ALL.len() {
+                    let origin = origin.to_string();
+                    notice = notice.child(
+                        pill(
+                            SharedString::from(format!("retry-home-{origin}")),
+                            "Retry server",
+                            Some(REFRESH),
+                            false,
+                        )
+                        .on_click(cx.listener(move |s, _, w, cx| {
+                            if let Some(server) = s.source_server(Some(&origin)) {
+                                for feed in crate::jellyfin::federation::HomeFeed::ALL {
+                                    s.load_home_feed(&server, feed, w, cx);
+                                }
+                            }
+                        })),
+                    );
+                } else {
+                    for (feed, reason) in failures {
+                        let origin = origin.to_string();
+                        let button = pill(
+                            SharedString::from(format!("retry-home-{origin}-{}", feed as usize)),
+                            format!("Retry {}", feed.title()),
+                            Some(REFRESH),
+                            false,
+                        );
+                        notice = notice.child(tip(button, reason.to_string()).on_click(
+                            cx.listener(move |s, _, w, cx| {
+                                if let Some(server) = s.source_server(Some(&origin)) {
+                                    s.load_home_feed(&server, feed, w, cx);
+                                }
+                            }),
+                        ));
+                    }
+                }
+                header = header.child(notice);
+            }
+        }
+        scroll = scroll.child(header);
         let available = f32::from(w.viewport_size().width) - 2. * GUTTER;
         for (row, shelf) in self.shelves.iter().enumerate() {
             let frosted = shelf.kind == ShelfKind::Continue;
@@ -621,5 +716,104 @@ impl Library {
             scroll = scroll.child(section.child(panel.child(heading).child(strip)));
         }
         div().flex_1().min_w_0().min_h_0().child(scroll)
+    }
+}
+
+pub(super) fn continue_menu(
+    item: Item,
+) -> impl Fn(gpui_component::menu::PopupMenu, WeakEntity<Library>) -> gpui_component::menu::PopupMenu
++ Clone {
+    use gpui_component::menu::PopupMenuItem;
+    move |menu, owner| {
+        let details = item.clone();
+        let view = owner.clone();
+        let mut menu = menu.item(
+            PopupMenuItem::new(match item.kind.as_str() {
+                "Episode" => "Episode details",
+                "Movie" => "Movie details",
+                _ => "Title details",
+            })
+            .on_click(move |_, w, cx| {
+                cx.stop_propagation();
+                let _ = view.update(cx, |s, cx| s.open_item(details.clone(), w, cx));
+            }),
+        );
+        if item.position() > 0 || item.copies.iter().any(|copy| copy.position() > 0) {
+            let target = item.clone();
+            let view = owner.clone();
+            menu = menu.item(PopupMenuItem::new("Play from beginning").on_click(
+                move |_, w, cx| {
+                    cx.stop_propagation();
+                    let _ = view.update(cx, |s, cx| {
+                        s.play_item_at(target.clone(), Some(0.), w, cx);
+                    });
+                },
+            ));
+        }
+        if let Some(id) = &item.series_id {
+            let id = id.clone();
+            let origin = item.origin.clone();
+            let view = owner.clone();
+            menu = menu.item(
+                PopupMenuItem::new("Go to series").on_click(move |_, w, cx| {
+                    cx.stop_propagation();
+                    let _ = view.update(cx, |s, cx| {
+                        let Some(server) = s.source_server(origin.as_deref()) else {
+                            return;
+                        };
+                        let id = id.clone();
+                        let origin = origin.clone();
+                        s.work(
+                            w,
+                            cx,
+                            move || server.item(&id),
+                            move |s, mut series, w, cx| {
+                                series.origin = origin;
+                                s.open_item(series, w, cx);
+                                Ok(())
+                            },
+                        );
+                    });
+                }),
+            );
+        }
+        let target = item.clone();
+        menu.item(
+            PopupMenuItem::new("Mark watched").on_click(move |_, w, cx| {
+                cx.stop_propagation();
+                let _ = owner.update(cx, |s, cx| {
+                    s.set_item_flag(target.clone(), false, true, w, cx)
+                });
+            }),
+        )
+    }
+}
+
+impl Library {
+    pub(in crate::ui) fn focused_continue_actions(
+        &mut self,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((row, shelf)) = self
+            .state
+            .shelf
+            .and_then(|r| Some((r, self.shelves.get(r)?)))
+        else {
+            return false;
+        };
+        if !matches!(self.state.screen, Screen::Discover) || shelf.kind != ShelfKind::Continue {
+            return false;
+        }
+        let Some(item) = shelf.items.get(self.state.selection).cloned() else {
+            return false;
+        };
+        self.show_popup(
+            ("home-card", row * 100 + self.state.selection).into(),
+            continue_menu(item),
+            w,
+            cx,
+        );
+        true
     }
 }

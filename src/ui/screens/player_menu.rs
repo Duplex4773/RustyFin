@@ -1,12 +1,10 @@
-use super::{
-    player_chrome::{GOLD, PANEL},
-    *,
-};
-use crate::{jellyfin::Source, ui::playback::PlayerMenu};
+use super::*;
+use crate::{jellyfin::Source, preferences::Shader, ui::playback::PlayerMenu};
 use PlayerMenu::*;
 
-const ROW: f32 = 41.;
-const HEADER: f32 = 51.;
+const ROW: f32 = 38.;
+const HEADER: f32 = 48.;
+const SECONDARY: u32 = 0xc8cdce;
 
 impl PlayerMenu {
     fn title(self) -> &'static str {
@@ -14,6 +12,7 @@ impl PlayerMenu {
             Settings => "Playback Settings",
             Speed => "Playback Speed",
             Zoom => "Zoom",
+            Shaders => "Shaders",
             Quality => "Quality",
             Timer => "Sleep Timer",
             AudioSync => "Audio Sync",
@@ -30,6 +29,7 @@ impl PlayerMenu {
             Settings => "\u{e9e9}",
             Speed => "\u{ec4a}",
             Zoom => "\u{e8a3}",
+            Shaders => "\u{e790}",
             Quality => "\u{e714}",
             Timer => "\u{e708}",
             AudioSync => "\u{e895}",
@@ -50,7 +50,7 @@ fn line() -> Div {
         .w_full()
         .flex()
         .items_center()
-        .gap_3()
+        .gap_2()
 }
 
 fn action(
@@ -64,14 +64,18 @@ fn action(
         .tab_stop(true)
         .cursor_pointer()
         .rounded_md()
-        .hover(|d| d.bg(rgb(0x22242a)))
-        .focus(|d| d.bg(rgb(0x2b2d33)).border_1().border_color(rgb(MUTED)))
-        .when_some(glyph, |d, g| d.child(icon(g, 19.).text_color(rgb(MUTED))))
+        .border_1()
+        .border_color(rgba(0x00000000))
+        .hover(|d| d.bg(rgba(0xffffff16)))
+        .focus(|d| d.bg(rgba(0x101713b0)).border_color(rgb(LIME)))
+        .when_some(glyph, |d, g| {
+            d.child(icon(g, 17.).text_color(rgb(SECONDARY)))
+        })
         .child(label(name, 15., TEXT).min_w_0().flex_1().truncate())
 }
 
 fn selection(id: impl Into<ElementId>, name: impl Into<SharedString>, on: bool) -> Stateful<Div> {
-    action(id, name, None).when(on, |d| d.child(icon("\u{e73e}", 16.).text_color(rgb(GOLD))))
+    action(id, name, None).when(on, |d| d.child(icon("\u{e73e}", 16.).text_color(rgb(LIME))))
 }
 
 fn switch(on: bool) -> Div {
@@ -82,8 +86,8 @@ fn switch(on: bool) -> Div {
         .h(px(22.))
         .rounded_full()
         .border_2()
-        .border_color(rgb(if on { 0x896b14 } else { 0x3e4048 }))
-        .bg(rgb(if on { 0x896b14 } else { PANEL }))
+        .border_color(if on { rgb(LIME) } else { rgba(0xffffff70) })
+        .bg(if on { rgb(LIME) } else { rgba(0x0a0e105e) })
         .child(
             div()
                 .absolute()
@@ -91,7 +95,7 @@ fn switch(on: bool) -> Div {
                 .top(px(2.))
                 .size(px(14.))
                 .rounded_full()
-                .bg(rgb(if on { GOLD } else { 0x555861 })),
+                .bg(rgb(if on { 0x22281b } else { SECONDARY })),
         )
 }
 
@@ -106,7 +110,11 @@ fn readout(name: &str, value: impl Into<String>) -> Div {
         .flex()
         .items_center()
         .gap_3()
-        .child(label(name.to_owned(), 13., MUTED).w(px(82.)).flex_none())
+        .child(
+            label(name.to_owned(), 13., SECONDARY)
+                .w(px(82.))
+                .flex_none(),
+        )
         .child(label(value, 14., TEXT).min_w_0().flex_1())
 }
 
@@ -151,12 +159,11 @@ impl Library {
                 self.initial_menu_button(d)
             })
             .child(
-                label(value, 14., MUTED)
-                    .font_weight(FontWeight::SEMIBOLD)
+                label(value, 13., SECONDARY)
                     .truncate()
-                    .max_w(px(208.)),
+                    .max_w(relative(0.45)),
             )
-            .child(icon(NEXT, 13.).text_color(rgb(MUTED)))
+            .child(icon(NEXT, 12.).text_color(rgb(SECONDARY)))
             .on_click(cx.listener(move |s, _, _, cx| s.enter_player_menu(page, cx)))
     }
 
@@ -169,6 +176,12 @@ impl Library {
         if p.mpv() && !p.audio_only {
             rows.push(
                 self.navigate_setting(Zoom, format!("{:.0}%", self.controls.zoom * 100.), cx)
+                    .into_any_element(),
+            );
+        }
+        if let Some(shader) = p.shader() {
+            rows.push(
+                self.navigate_setting(Shaders, shader.label().to_owned(), cx)
                     .into_any_element(),
             );
         }
@@ -260,6 +273,30 @@ impl Library {
                     .into_any_element(),
             );
         }
+        if p.seekable && p.status.ready {
+            rows.push(
+                action("restart-playback", "Play from beginning", Some("\u{e72c}"))
+                    .on_click(cx.listener(|s, _, w, cx| {
+                        if let Some(p) = &s.player {
+                            let paused = p.status.paused;
+                            let rewind = -p.status.duration.max(p.status.position);
+                            s.toggle_player_menu(Settings, w, cx);
+                            s.control(Some(rewind), cx);
+                            if paused {
+                                s.control(None, cx);
+                            }
+                        }
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if self.next_title().is_some() {
+            rows.push(
+                action("play-next-title", "Play next", Some("\u{e893}"))
+                    .on_click(cx.listener(|s, _, w, cx| s.advance(w, cx)))
+                    .into_any_element(),
+            );
+        }
         rows.push(
             self.navigate_setting(Info, p.label.clone(), cx)
                 .into_any_element(),
@@ -321,7 +358,7 @@ impl Library {
                             .justify_center()
                             .gap_0()
                             .child(label(t.label(), 14., MUTED).truncate().max_w_full())
-                            .child(label(reason, 12., MUTED))
+                            .child(label(reason, 12., SECONDARY))
                             .into_any_element(),
                     );
                 } else {
@@ -335,13 +372,14 @@ impl Library {
     fn menu_rows(&self, page: PlayerMenu, p: &Player, cx: &mut Context<Self>) -> Vec<AnyElement> {
         match page {
             Settings => self.settings_rows(p, cx),
+            Shaders => self.shader_rows(p, cx),
             Audio | Subtitles => self.track_rows(page, p, cx),
             Speed if p.native_bitstream() => vec![
                 readout("Normal", "1× · Digital bitstream").into_any_element(),
                 label(
                     "The receiver requires normal speed for this audio output.",
                     13.,
-                    MUTED,
+                    SECONDARY,
                 )
                 .px_3()
                 .py_2()
@@ -508,29 +546,55 @@ impl Library {
                         c.start_position_ticks as f64 / 10_000_000. <= p.status.position
                     })
                     .checked_sub(1);
-                chapters
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        let at = c.start_position_ticks as f64 / 10_000_000.;
-                        let name = c
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("Chapter {}", i + 1));
-                        selection(
-                            ("chapter", i),
-                            format!("{}    {name}", clock(at)),
-                            current == Some(i),
-                        )
-                        .on_click(cx.listener(move |s, _, w, cx| {
-                            if let Some(p) = &s.player {
-                                s.control(Some(at - p.status.position), cx);
-                            }
+                let mut rows = Vec::new();
+                let jump = |row: Stateful<Div>, at: f64, cx: &mut Context<Self>| {
+                    row.on_click(cx.listener(move |s, _, w, cx| {
+                        if let Some(p) = &s.player {
+                            s.control(Some(at - p.status.position), cx);
                             s.toggle_player_menu(Chapters, w, cx);
-                        }))
-                        .into_any_element()
-                    })
-                    .collect()
+                        }
+                    }))
+                    .into_any_element()
+                };
+                let previous = chapters.iter().enumerate().rev().find(|(_, chapter)| {
+                    chapter.start_position_ticks as f64 / 10_000_000. < p.status.position - 2.
+                });
+                if let Some((i, chapter)) = previous {
+                    let name = if current == Some(i) {
+                        "Restart chapter"
+                    } else {
+                        "Previous chapter"
+                    };
+                    rows.push(jump(
+                        action("previous-chapter", name, Some("\u{e892}")),
+                        chapter.start_position_ticks as f64 / 10_000_000.,
+                        cx,
+                    ));
+                }
+                if let Some(chapter) = chapters.iter().find(|c| {
+                    c.start_position_ticks as f64 / 10_000_000. > p.status.position + 0.25
+                }) {
+                    rows.push(jump(
+                        action("next-chapter", "Next chapter", Some("\u{e893}")),
+                        chapter.start_position_ticks as f64 / 10_000_000.,
+                        cx,
+                    ));
+                }
+                for (i, chapter) in chapters.iter().enumerate() {
+                    let at = chapter.start_position_ticks as f64 / 10_000_000.;
+                    let name = chapter
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("Chapter {}", i + 1));
+                    let row = selection(
+                        ("chapter", i),
+                        format!("{}    {name}", clock(at)),
+                        current == Some(i),
+                    )
+                    .when(current == Some(i), |d| self.initial_menu_button(d));
+                    rows.push(jump(row, at, cx));
+                }
+                rows
             }
             Queue => {
                 let mut rows = Vec::new();
@@ -594,6 +658,43 @@ impl Library {
         }
     }
 
+    fn shader_rows(&self, p: &Player, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(current) = p.shader() else {
+            return Vec::new();
+        };
+        let custom = self
+            .prefs
+            .mpv
+            .custom_shaders
+            .iter()
+            .cloned()
+            .map(Shader::Custom);
+        let mut rows = Vec::new();
+        for (i, shader) in Shader::PRESETS.iter().cloned().chain(custom).enumerate() {
+            let selected = current == &shader;
+            rows.push(
+                action(("player-shader", i), shader.label().to_owned(), None)
+                    .when(selected, |d| self.initial_menu_button(d))
+                    .child(
+                        label(shader.description(), 12., SECONDARY)
+                            .truncate()
+                            .max_w(relative(0.5)),
+                    )
+                    .when(selected, |d| {
+                        d.child(icon("\u{e73e}", 16.).text_color(rgb(LIME)))
+                    })
+                    .on_click(cx.listener(move |s, _, _, cx| s.select_shader(shader.clone(), cx)))
+                    .into_any_element(),
+            );
+        }
+        rows.push(
+            action("add-shader-file", "Add shader file…", Some("\u{e710}"))
+                .on_click(cx.listener(|s, _, w, cx| s.import_shader(w, cx)))
+                .into_any_element(),
+        );
+        rows
+    }
+
     pub(super) fn playback_menu(
         &self,
         p: &Player,
@@ -628,7 +729,7 @@ impl Library {
         }
         let warning = !self.controls.warning.is_empty();
         let height =
-            (HEADER + 12. + ROW * rows.len() as f32 + if warning { 48. } else { 0. }).min(548.);
+            (HEADER + 12. + ROW * rows.len() as f32 + if warning { 48. } else { 0. }).min(492.);
         let header = div()
             .h(px(HEADER))
             .w_full()
@@ -638,7 +739,7 @@ impl Library {
             .items_center()
             .gap_2()
             .border_b_1()
-            .border_color(rgb(0x323338))
+            .border_color(rgba(0xffffff28))
             .when(page == Settings, |d| {
                 d.child(icon(page.glyph(), 19.).ml_1())
             })
@@ -648,7 +749,7 @@ impl Library {
                         .on_click(cx.listener(|s, _, w, cx| s.back_player_menu(w, cx))),
                 )
             })
-            .child(title(page.title(), 20.).flex_1())
+            .child(title(page.title(), 18.).flex_1())
             .child(
                 glyph_button("Close playback settings", "\u{e711}")
                     .track_focus(&self.menu_focus.close)
@@ -661,7 +762,7 @@ impl Library {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .px_1()
+                .px(px(6.))
                 .py(px(6.))
                 .when(warning, |d| {
                     d.child(
@@ -687,10 +788,10 @@ impl Library {
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded(px(14.))
-                .bg(rgb(PANEL))
+                .rounded(px(16.))
+                .bg(rgba(0x101419bf))
                 .border_1()
-                .border_color(rgb(0x2c2d32))
+                .border_color(rgba(0xffffff45))
                 .child(header)
                 .child(body),
             height + 2.,

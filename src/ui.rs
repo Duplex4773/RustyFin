@@ -10,6 +10,7 @@ mod formats;
 mod gamepad;
 mod glass;
 mod history;
+mod home;
 mod scrolling;
 mod services;
 mod trickplay;
@@ -34,6 +35,16 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use screens::SettingsPage;
 use std::time::{Duration, Instant};
 
+actions!(rustyfin, [NextPlayerControl, PreviousPlayerControl]);
+const PLAYER_KEYS: &str = "RustyFinPlayer";
+
+pub(crate) fn bind_player_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", NextPlayerControl, Some(PLAYER_KEYS)),
+        KeyBinding::new("shift-tab", PreviousPlayerControl, Some(PLAYER_KEYS)),
+    ]);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Recommended,
@@ -54,10 +65,16 @@ enum Screen {
     ExploreTitle(Box<crate::seerr::Entry>),
     Anime,
     AnimeTitle(u64),
-    Copies { item: Box<Item>, play: bool },
+    Copies { item: Box<Item>, action: CopyAction },
     Live(bool),
     Guide(Box<Item>),
     Timers(bool),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum CopyAction {
+    Details,
+    Play { position: Option<f64> },
 }
 
 impl Screen {
@@ -90,9 +107,11 @@ enum LibraryReturn {
 }
 
 struct ViewState {
+    profile: Option<String>,
     screen: Screen,
     reload_on_return: bool,
-    people_search: bool,
+    search: screens::SearchState,
+    settings_nav: screens::SettingsNavigation,
     page: Option<Page>,
     seasons: Vec<Item>,
     series_target: Option<Item>,
@@ -126,8 +145,10 @@ impl ViewState {
     fn new(screen: Screen) -> Self {
         Self {
             screen,
+            profile: None,
             reload_on_return: false,
-            people_search: false,
+            search: Default::default(),
+            settings_nav: Default::default(),
             page: None,
             seasons: Vec::new(),
             series_target: None,
@@ -161,6 +182,7 @@ impl ViewState {
 
 pub struct Library {
     address: Entity<InputState>,
+    password_sign_in: Option<PasswordSignIn>,
     search: Entity<InputState>,
     focus: FocusHandle,
     more_focus: FocusHandle,
@@ -175,7 +197,10 @@ pub struct Library {
     job: Option<Task<()>>,
     playback_poll: Option<Task<()>>,
     flag_job: Option<Task<()>>,
+    home: home::Home,
     home_dirty: bool,
+    search_target_job: Option<Task<()>>,
+    recent_searches: Vec<String>,
     search_delay: Option<Task<()>>,
     state: ViewState,
     history: history::History,
@@ -192,10 +217,12 @@ pub struct Library {
     artwork: Artwork,
     formats: formats::CardFormats,
     navigation_focus: FocusHandle,
+    search_link_focus: FocusHandle,
+    search_keyboard: Option<screens::SearchKeyboard>,
     shelf_light: glass::ShelfLight,
     menu_focus: playback::MenuFocus,
     filters_open: bool,
-    browse_menu: Option<(&'static str, Entity<gpui_component::menu::PopupMenu>)>,
+    popup_menu: Option<(ElementId, Entity<gpui_component::menu::PopupMenu>)>,
     controls: Controls,
     prefs: Preferences,
     accounts: Vec<crate::jellyfin::Account>,
@@ -216,15 +243,24 @@ pub struct Library {
     generation: u64,
 }
 
+struct PasswordSignIn {
+    username: Entity<InputState>,
+    password: Entity<InputState>,
+}
+
 impl Library {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let address =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://jellyfin.example.com"));
-        let search = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Search movies, shows and episodes"));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search titles and people"));
         cx.subscribe_in(&address, window, |this, _, event, w, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
-                this.connect(w, cx);
+                if let Some(form) = &this.password_sign_in {
+                    form.username.read(cx).focus_handle(cx).focus(w);
+                } else {
+                    this.connect(w, cx);
+                }
             }
         })
         .detach();
@@ -240,11 +276,10 @@ impl Library {
                     }
                     this.history.clear_forward();
                     this.search_delay = None;
+                    this.search_target_job = None;
                     this.job = None;
                     this.busy = !term.is_empty();
-                    let people = this.state.people_search;
                     this.state = ViewState::new(Screen::Search(term));
-                    this.state.people_search = people;
                     this.message.clear();
                     this.search_delay = Some(cx.spawn_in(w, async move |view, cx| {
                         cx.background_executor()
@@ -258,10 +293,7 @@ impl Library {
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => {
-                    this.search_delay = None;
-                    this.focus.focus(w);
-                    this.keyboard = true;
-                    this.load(w, cx);
+                    this.submit_search(w, cx);
                 }
                 _ => {}
             }
@@ -281,6 +313,7 @@ impl Library {
             detail_panel_focus: cx.focus_handle(),
             detail_current_focus: cx.focus_handle(),
             address,
+            password_sign_in: None,
             search,
             server,
             message,
@@ -290,7 +323,10 @@ impl Library {
             job: None,
             playback_poll: None,
             flag_job: None,
+            home: Default::default(),
             home_dirty: false,
+            search_target_job: None,
+            recent_searches: vec![],
             search_delay: None,
             state: ViewState::new(Screen::Discover),
             history: Default::default(),
@@ -307,10 +343,12 @@ impl Library {
             artwork: Artwork::default(),
             formats: Default::default(),
             navigation_focus: cx.focus_handle(),
+            search_link_focus: cx.focus_handle(),
+            search_keyboard: None,
             shelf_light: Default::default(),
             menu_focus: playback::MenuFocus::new(cx),
             filters_open: false,
-            browse_menu: None,
+            popup_menu: None,
             controls: Default::default(),
             prefs: Default::default(),
             accounts: vec![],
@@ -391,7 +429,7 @@ impl Library {
                         this.menu_focus.origin = PlayerMenu::Settings;
                         this.menu_focus.entering.set(true);
                         this.controls.menu = PlayerMenu::Settings;
-                        p.controls_visible = true;
+                        p.wake_controls();
                     } else {
                         this.message = format!("{e:#}");
                     }
@@ -412,6 +450,11 @@ impl Library {
             let pair = server.pair()?;
             Ok((server, pair))
         }, |this, (server, pair), window, cx| {
+            let Some(pair) = pair else {
+                this.show_password_sign_in(window, cx);
+                this.message = "Quick Connect is unavailable on this server. Sign in with your Jellyfin username and password.".into();
+                return Ok(());
+            };
             this.code = Some(pair.code);
             this.focus.focus(window);
             this.job = Some(cx.spawn_in(window, async move |view, cx| {
@@ -429,18 +472,8 @@ impl Library {
                 };
                 let _ = view.update_in(cx, |this, window, cx| {
                     this.code = None;
-                    match signed_in.and_then(|a| {
-                        let server = Server::restore(a.clone())?;
-                        let saved = credentials::save(&a);
-                        Ok((server, saved))
-                    }) {
-                        Ok((server, saved)) => {
-                            this.server = Some(server);
-                            this.load_preferences();
-                            this.load(window, cx);
-                            if let Err(e) = saved { this.message = format!("Signed in for this session. Windows could not save the credential. {e}"); }
-                        }
-                        Err(e) => this.message = format!("{e:#}"),
+                    if let Err(e) = signed_in.and_then(|a| this.finish_sign_in(a, window, cx)) {
+                        this.message = format!("{e:#}");
                     }
                     cx.notify();
                 });
@@ -449,9 +482,83 @@ impl Library {
         });
     }
 
+    fn show_password_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_pairing(window, cx);
+        self.message.clear();
+        let username = cx.new(|cx| InputState::new(window, cx));
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true));
+        cx.subscribe_in(&username, window, |s, _, event, w, cx| {
+            if matches!(event, InputEvent::PressEnter { .. })
+                && let Some(form) = &s.password_sign_in
+            {
+                form.password.read(cx).focus_handle(cx).focus(w);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&password, window, |s, _, event, w, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                s.sign_in_with_password(w, cx);
+            }
+        })
+        .detach();
+        if !self.address.read(cx).value().trim().is_empty() {
+            username.read(cx).focus_handle(cx).focus(window);
+        }
+        self.password_sign_in = Some(PasswordSignIn { username, password });
+        cx.notify();
+    }
+
+    fn sign_in_with_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.server.is_some() {
+            return;
+        }
+        let Some(form) = &self.password_sign_in else {
+            return;
+        };
+        let username = form.username.read(cx).value().trim().to_owned();
+        if username.is_empty() {
+            self.message = "Enter your Jellyfin username.".into();
+            form.username.read(cx).focus_handle(cx).focus(window);
+            cx.notify();
+            return;
+        }
+        let password = form.password.read(cx).value().to_string();
+        let address = self.address.read(cx).value().to_string();
+        self.work(
+            window,
+            cx,
+            move || {
+                let server = Server::new(&address, uuid::Uuid::new_v4().to_string())?;
+                server.authenticate_by_name(&username, &password)
+            },
+            |s, account, w, cx| s.finish_sign_in(account, w, cx),
+        );
+    }
+
+    fn finish_sign_in(
+        &mut self,
+        account: crate::jellyfin::Account,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let server = Server::restore(account.clone())?;
+        let saved = credentials::save(&account);
+        self.password_sign_in = None;
+        self.server = Some(server);
+        self.focus.focus(window);
+        self.load_preferences();
+        self.load(window, cx);
+        if let Err(e) = saved {
+            self.message =
+                format!("Signed in for this session. Windows could not save the credential. {e}");
+        }
+        Ok(())
+    }
+
     fn cancel_pairing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.job = None;
         self.code = None;
+        self.password_sign_in = None;
         self.busy = false;
         self.address.read(cx).focus_handle(cx).focus(window);
         cx.notify();
@@ -479,6 +586,7 @@ impl Library {
         self.controls = Default::default();
         self.load_preferences();
         self.flag_job = None;
+        self.home.clear();
         self.home_dirty = false;
         self.history.clear();
         self.shelves.clear();
@@ -487,6 +595,7 @@ impl Library {
         self.library_list_job = None;
         self.artwork.clear(window, cx);
         self.playing = None;
+        self.search_target_job = None;
         self.search_delay = None;
         self.state = ViewState::new(Screen::Discover);
         self.search
@@ -518,13 +627,18 @@ impl Library {
         }
     }
 
-    fn leave_view(&mut self) {
+    fn leave_view(&mut self, window: &Window, cx: &App) {
+        self.state.settings_nav.remember(window, cx);
+        self.search_keyboard = None;
         self.state.wheel_motion = None;
-        self.state.reload_on_return |=
-            self.busy || self.search_delay.is_some() || !self.message.is_empty();
+        let has_search_results =
+            matches!(self.state.screen, Screen::Search(_)) && !self.state.search.groups.is_empty();
+        self.state.reload_on_return |= !has_search_results
+            && (self.busy || self.search_delay.is_some() || !self.message.is_empty());
         self.similar_job = None;
         self.return_fade = None;
         self.formats.expanded = None;
+        self.search_target_job = None;
         self.search_delay = None;
         self.job = None;
         self.busy = false;
@@ -532,16 +646,29 @@ impl Library {
         self.failure = None;
         self.rebind = None;
         self.filters_open = false;
-        self.browse_menu = None;
+        self.popup_menu = None;
         self.keyboard = false;
         self.state.wall.suspend();
         self.last_slide = Instant::now();
     }
 
     fn navigate(&mut self, screen: Screen, window: &mut Window, cx: &mut Context<Self>) {
-        self.leave_view();
+        self.leave_view(window, cx);
+        let profile = self
+            .server
+            .as_ref()
+            .and_then(Server::identity)
+            .map(|a| a.key());
+        if self.state.profile.is_none() {
+            self.state.profile.clone_from(&profile);
+        }
         self.history.visit(&mut self.state, screen);
-        if matches!(self.state.screen, Screen::Search(_)) {
+        self.state.profile = profile;
+        if let Screen::Search(term) = &self.state.screen {
+            if self.search.read(cx).value().as_ref() != term {
+                self.search
+                    .update(cx, |input, cx| input.set_value(term.clone(), window, cx));
+            }
             self.search.read(cx).focus_handle(cx).focus(window);
         } else {
             self.focus.focus(window);
@@ -550,6 +677,11 @@ impl Library {
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_keyboard.take().is_some() {
+            self.search.read(cx).focus_handle(cx).focus(window);
+            cx.notify();
+            return;
+        }
         if let Some(panel) = self.state.detail_panel.take() {
             self.detail_launcher(panel).focus(window);
             cx.notify();
@@ -605,10 +737,15 @@ impl Library {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.history.can_go(direction) {
+        let Some(dest) = self.history.destination(direction) else {
+            return;
+        };
+        if let Some(key) = dest.profile.clone()
+            && !self.activate_profile(&key, window, cx)
+        {
             return;
         }
-        self.leave_view();
+        self.leave_view(window, cx);
         self.history.go(&mut self.state, direction);
         self.keyboard = matches!(self.state.screen, Screen::Library(..));
         self.state.ratings_pending = false;
@@ -639,6 +776,14 @@ impl Library {
             || matches!(&self.state.screen, Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
         {
             self.load(window, cx);
+        }
+        if self.state.search.restore_focus(window) {
+            cx.notify();
+            return;
+        }
+        if self.state.settings_nav.restore(window) {
+            cx.notify();
+            return;
         }
         if let Some(index) = self.state.return_to_similar.take() {
             self.focus_similar(index, window);
@@ -671,40 +816,7 @@ impl Library {
         }
         let offset = self.state.offset;
         match self.state.screen.clone() {
-            Screen::Discover => {
-                if !self.shelves.is_empty() && !self.home_dirty {
-                    self.busy = false;
-                    cx.notify();
-                    return;
-                }
-                self.home_dirty = false;
-                let others = if self.prefs.all_servers {
-                    self.connected.clone()
-                } else {
-                    vec![]
-                };
-                self.work(
-                    window,
-                    cx,
-                    move || crate::jellyfin::federation::discover(&server, &others),
-                    |s, (shelves, unavailable), _, _| {
-                        if !unavailable.is_empty() {
-                            s.message = format!("Unavailable servers · {}", unavailable.join(", "));
-                        }
-                        s.featured = screens::featured_titles(&shelves);
-                        s.state.shelf = None;
-                        s.state.selection = 0;
-                        s.hero = 0;
-                        s.last_slide = Instant::now();
-                        s.shelves = shelves
-                            .into_iter()
-                            .filter(|r| !r.items.is_empty())
-                            .collect();
-                        s.shelf_scroll = s.shelves.iter().map(|_| ScrollHandle::new()).collect();
-                        Ok(())
-                    },
-                );
-            }
+            Screen::Discover => self.load_home(window, cx),
             Screen::Settings(SettingsPage::Display) => self.read_display(window, cx),
             Screen::Settings(_) => cx.notify(),
             Screen::Explore => self.load_explore(window, cx),
@@ -740,16 +852,7 @@ impl Library {
                 },
             ),
             Screen::Library(..) => cx.notify(),
-            Screen::Search(query) if !query.is_empty() => {
-                let servers = self.browse_servers();
-                let people = self.state.people_search;
-                self.work(
-                    window,
-                    cx,
-                    move || crate::jellyfin::federation::search(&servers, &query, people, offset),
-                    Self::receive_combined,
-                );
-            }
+            Screen::Search(query) if !query.is_empty() => self.load_search(query, window, cx),
             Screen::Detail(item, _) if item.playable() => {
                 self.work(
                     window,
@@ -779,7 +882,7 @@ impl Library {
                     .clone()
                     .or_else(|| server.identity().map(|a| a.key()));
                 let cached_target = self.state.series_target.clone().or_else(|| {
-                    if self.home_dirty {
+                    if self.home_dirty || !self.home.continue_ready(origin.as_deref()) {
                         return None;
                     }
                     self.shelves
@@ -924,6 +1027,10 @@ impl Library {
     }
 
     fn refresh(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.state.screen, Screen::Discover) && self.home.loading() && !self.home_dirty
+        {
+            return;
+        }
         self.similar_job = None;
         self.state.similar = None;
         if matches!(self.state.screen, Screen::Library(..)) {
@@ -932,9 +1039,9 @@ impl Library {
         self.library_list_job = None;
         self.formats.clear();
         self.artwork.retry();
+        self.search_target_job = None;
         if matches!(self.state.screen, Screen::Discover) {
-            self.shelves.clear();
-            self.state.shelf = None;
+            self.home_dirty = true;
         }
         if matches!(&self.state.screen, Screen::Detail(i, _) if i.kind == "Series") {
             self.state.series_target = None;
@@ -971,15 +1078,35 @@ impl Library {
 
     fn adopt_server(&mut self, item: &Item, w: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(key) = &item.origin else { return true };
+        let active = self
+            .server
+            .as_ref()
+            .and_then(Server::identity)
+            .map(|a| a.key());
+        if active.as_ref() == Some(key) {
+            return true;
+        }
+        if !self.activate_profile(key, w, cx) {
+            return false;
+        }
+        if matches!(self.state.screen, Screen::Search(_)) {
+            self.state.profile = active;
+        } else {
+            self.history.clear();
+            self.state = ViewState::new(Screen::Discover);
+        }
+        true
+    }
+    fn activate_profile(&mut self, key: &str, w: &mut Window, cx: &mut Context<Self>) -> bool {
         if self
             .server
             .as_ref()
             .and_then(Server::identity)
-            .is_some_and(|a| &a.key() == key)
+            .is_some_and(|a| a.key() == key)
         {
             return true;
         }
-        let Some(a) = self.accounts.iter().find(|a| &a.key() == key).cloned() else {
+        let Some(a) = self.accounts.iter().find(|a| a.key() == key).cloned() else {
             self.message = "Pair this Jellyfin server again to open this title.".into();
             cx.notify();
             return false;
@@ -991,8 +1118,7 @@ impl Library {
             Ok(server) => {
                 self.stop();
                 self.flag_job = None;
-                self.history.clear();
-                self.state = ViewState::new(Screen::Discover);
+                self.home.clear();
                 self.shelves.clear();
                 self.featured.clear();
                 self.services = services::Services::new(w, cx);
@@ -1033,7 +1159,7 @@ impl Library {
             self.navigate(
                 Screen::Copies {
                     item: Box::new(item),
-                    play: false,
+                    action: CopyAction::Details,
                 },
                 w,
                 cx,
@@ -1043,18 +1169,7 @@ impl Library {
         }
     }
     fn play_item(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
-        if !item.copies.is_empty() {
-            self.navigate(
-                Screen::Copies {
-                    item: Box::new(item),
-                    play: true,
-                },
-                w,
-                cx,
-            );
-        } else if self.adopt_server(&item, w, cx) {
-            self.play_item_at(item, None, w, cx);
-        }
+        self.play_item_at(item, None, w, cx);
     }
     fn start_player(
         &mut self,
@@ -1081,6 +1196,8 @@ impl Library {
             &self.prefs,
         ) {
             Ok(mut player) => {
+                self.controls.animate_chrome = scrolling::animations_enabled();
+                self.controls.volume_hovered = false;
                 if !self.controls.captions.is_empty() {
                     player.caption_height = (self.prefs.subtitle_size as f32 * 1.7 + 12.).max(52.);
                 }
@@ -1130,6 +1247,9 @@ impl Library {
                             }
                         }
                         Ok(()) => {
+                            if let Some(warning) = player.take_shader_error() {
+                                this.controls.warning = warning;
+                            }
                             if this.controls.profile_notice.is_none()
                                 && let Some(message) = request.route.startup_notice()
                                 && previous.ready
@@ -1300,13 +1420,37 @@ impl Library {
         };
         self.checkpoint_download(ticks, player.status.ended, true);
         self.home_dirty = true;
+        let active = self
+            .server
+            .as_ref()
+            .and_then(Server::identity)
+            .map(|a| a.key());
+        let origin = self
+            .playing
+            .as_ref()
+            .and_then(|i| i.origin.clone())
+            .or_else(|| active.clone());
         if let Some(episode) = self.playing.as_ref().filter(|i| i.kind == "Episode") {
             for state in self
                 .history
                 .iter_mut()
                 .chain(std::iter::once(&mut self.state))
             {
-                if matches!(&state.screen, Screen::Detail(show, _) if episode.series_id.as_ref() == Some(&show.id))
+                let profile = state.profile.as_ref().or(active.as_ref());
+                if state.search.best.as_ref().is_some_and(|s| {
+                    episode.series_id.as_ref() == Some(&s.id)
+                        && s.origin.as_ref().or(profile) == origin.as_ref()
+                }) {
+                    if player.status.ended {
+                        state.search.target = None;
+                        state.search.needs_target = true;
+                    } else {
+                        let mut target = episode.clone();
+                        target.origin = state.search.best.as_ref().and_then(|i| i.origin.clone());
+                        state.search.target = Some(target);
+                    }
+                }
+                if matches!(&state.screen, Screen::Detail(show, _) if episode.series_id.as_ref() == Some(&show.id) && show.origin.as_ref().or(profile) == origin.as_ref())
                 {
                     state.reload_series_target =
                         player.status.ended && self.controls.next_episode.is_none();
@@ -1318,17 +1462,11 @@ impl Library {
                 }
             }
         }
-        self.update_items(|item| {
-            if item.id == id {
-                let data = item.user_data.get_or_insert_with(Default::default);
-                data.playback_position_ticks = Some(if player.status.ended {
-                    0
-                } else {
-                    (player.status.position * 10_000_000.) as u64
-                });
-                if player.status.ended {
-                    data.played = Some(true);
-                }
+        self.update_items(&id, origin.as_deref(), |item| {
+            let data = item.user_data.get_or_insert_with(Default::default);
+            data.playback_position_ticks = Some(ticks);
+            if player.status.ended {
+                data.played = Some(true);
             }
         });
     }
@@ -1337,36 +1475,52 @@ impl Library {
         let Screen::Detail(item, _) = &self.state.screen else {
             return;
         };
-        let Some(server) = self.server.clone() else {
-            return;
-        };
-        if self.flag_job.is_some() {
-            return;
-        }
-        let id = item.id.clone();
         let old = item
             .user_data
             .as_ref()
             .and_then(|d| if favorite { d.is_favorite } else { d.played })
             .unwrap_or(false);
+        self.set_item_flag(*item.clone(), favorite, !old, window, cx);
+    }
+
+    fn set_item_flag(
+        &mut self,
+        item: Item,
+        favorite: bool,
+        value: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.flag_job.is_some() {
+            return;
+        }
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
+            return;
+        };
+        let id = item.id.clone();
+        let origin = server.identity().map(|a| a.key());
         let target = id.clone();
         let worker = cx
             .background_executor()
-            .spawn(async move { server.set_user_flag(&target, favorite, !old) });
+            .spawn(async move { server.set_user_flag(&target, favorite, value) });
         self.flag_job = Some(cx.spawn_in(window, async move |view, cx| {
             let result = worker.await;
             let _ = view.update(cx, |s, cx| {
                 s.flag_job = None;
                 match result {
                     Ok(data) => {
-                        s.update_items(|item| {
-                            if item.id == id {
-                                item.user_data = Some(data.clone());
-                            }
+                        let active = s.server.as_ref().and_then(Server::identity).map(|a| a.key());
+                        s.update_items(&id, origin.as_deref(), |entry| {
+                                entry.user_data = Some(data.clone());
                         });
-                        if !favorite && let Screen::Detail(ep, _) = &s.state.screen && ep.kind == "Episode" {
-                            for view in s.history.iter_mut() {
-                                if matches!(&view.screen, Screen::Detail(series, _) if Some(&series.id) == ep.series_id.as_ref()) {
+                        if !favorite && let Some(series_id) = &item.series_id {
+                            for view in s.history.iter_mut().chain(std::iter::once(&mut s.state)) {
+                                if view.search.best.as_ref().is_some_and(|i| &i.id == series_id && i.origin == origin) {
+                                    view.search.target = None;
+                                    view.search.needs_target = true;
+                                    s.search_target_job = None;
+                                }
+                                if matches!(&view.screen, Screen::Detail(series, _) if &series.id == series_id && series.origin.as_ref().or(view.profile.as_ref()).or(active.as_ref()) == origin.as_ref()) {
                                     view.series_target = None;
                                     view.reload_series_target = true;
                                 }
@@ -1381,17 +1535,50 @@ impl Library {
         }));
     }
 
-    fn update_items(&mut self, update: impl Fn(&mut Item)) {
+    fn update_items(&mut self, id: &str, origin: Option<&str>, update: impl Fn(&mut Item)) {
+        let active = self
+            .server
+            .as_ref()
+            .and_then(Server::identity)
+            .map(|a| a.key());
+        let apply = |item: &mut Item, profile: Option<&str>| {
+            let matches = |i: &Item| i.id == id && i.origin.as_deref().or(profile) == origin;
+            if matches(item) {
+                update(item);
+            }
+            for copy in &mut item.copies {
+                if matches(copy) {
+                    update(copy);
+                }
+            }
+        };
         for state in self
             .history
             .iter_mut()
             .chain(std::iter::once(&mut self.state))
         {
+            let profile = state.profile.as_deref().or(active.as_deref());
+            let update = |item: &mut Item| apply(item, profile);
             if let Screen::Detail(item, _) = &mut state.screen {
                 update(item);
             }
             if let Some(target) = &mut state.series_target {
                 update(target);
+            }
+            for item in state
+                .search
+                .best
+                .iter_mut()
+                .chain(&mut state.search.target)
+                .chain(
+                    state
+                        .search
+                        .groups
+                        .iter_mut()
+                        .flat_map(|g| &mut g.page.items),
+                )
+            {
+                update(item);
             }
             if let Some(page) = &mut state.page {
                 page.items.iter_mut().for_each(&update);
@@ -1400,6 +1587,8 @@ impl Library {
                 state.wall.update_items(q, &update);
             }
         }
+        let update = |item: &mut Item| apply(item, active.as_deref());
+        self.home.update_items(&update);
         self.featured.iter_mut().for_each(&update);
         for shelf in &mut self.shelves {
             shelf.items.iter_mut().for_each(&update);
@@ -1448,6 +1637,10 @@ impl Library {
             return;
         }
         let key = event.keystroke.key.as_str();
+        if let Some(player) = self.player.as_mut().filter(|_| !self.controls.mini) {
+            player.use_keyboard_controls();
+            cx.notify();
+        }
         if self.player.as_ref().is_some_and(|p| p.panel_open) {
             match key {
                 "up" | "left" | "down" | "right" | "tab" => {
@@ -1461,6 +1654,12 @@ impl Library {
             }
             cx.stop_propagation();
             return;
+        }
+        if !self.controls.remote_scrub
+            && self.menu_focus.timeline.is_focused(window)
+            && matches!(key, "left" | "right")
+        {
+            self.start_preview(window, cx);
         }
         if self.controls.remote_scrub {
             match key {
@@ -1490,6 +1689,22 @@ impl Library {
             cx.notify();
             return;
         }
+        if self.menu_focus.volume.is_focused(window)
+            && self
+                .player
+                .as_ref()
+                .is_some_and(|p| p.pcm_volume.is_some() && !self.controls.mini)
+            && matches!(key, "up" | "right" | "down" | "left")
+        {
+            let step = if matches!(key, "up" | "right") {
+                0.05
+            } else {
+                -0.05
+            };
+            self.volume(Some(self.volume + step), cx);
+            cx.stop_propagation();
+            return;
+        }
         if self.credits_prompt().is_some() {
             match key {
                 "right" | "down" => self.menu_focus.credits.focus(window),
@@ -1508,14 +1723,16 @@ impl Library {
     fn regular_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         if self
-            .browse_menu
+            .popup_menu
             .as_ref()
             .is_some_and(|(_, menu)| menu.read(cx).focus_handle(cx).contains_focused(window, cx))
         {
             return;
         }
         if key == "tab" {
-            if event.keystroke.modifiers.shift {
+            if self.player.is_some() && !self.controls.mini {
+                self.step_player_focus(!event.keystroke.modifiers.shift, window, cx);
+            } else if event.keystroke.modifiers.shift {
                 window.focus_prev();
             } else {
                 window.focus_next();
@@ -1525,9 +1742,18 @@ impl Library {
         }
         if self.navigation_focus.contains_focused(window, cx) {
             match key {
+                "/" => self.navigate(Screen::Search(String::new()), window, cx),
                 "left" => window.focus_prev(),
                 "right" => window.focus_next(),
-                "down" | "escape" => self.focus.focus(window),
+                "down" => {
+                    self.focus.focus(window);
+                    if matches!(self.state.screen, Screen::Search(_)) {
+                        self.search.read(cx).focus_handle(cx).focus(window);
+                    } else {
+                        self.settings_key("down", window, cx);
+                    }
+                }
+                "escape" => self.focus.focus(window),
                 _ => return,
             }
             cx.stop_propagation();
@@ -1581,8 +1807,9 @@ impl Library {
                 }
                 _ => return,
             }
-        } else if self.code.is_some() && key == "escape" {
+        } else if (self.code.is_some() || self.password_sign_in.is_some()) && key == "escape" {
             self.cancel_pairing(window, cx);
+            self.message.clear();
         } else if self.server.is_some() {
             let typing = [
                 &self.search,
@@ -1606,14 +1833,29 @@ impl Library {
                 .subtitle_search
                 .as_ref()
                 .is_some_and(|s| s.language.read(cx).focus_handle(cx).is_focused(window));
+            if matches!(self.state.screen, Screen::Search(_)) && self.search_key(key, window, cx) {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if (typing || editing) && key != "escape" {
                 return;
             }
             let count = self.state.page.as_ref().map_or(0, |p| p.items.len());
             let selected = self.state.selection;
+            if (key == "menu" || key == "apps" || (key == "f10" && event.keystroke.modifiers.shift))
+                && self.focused_continue_actions(window, cx)
+            {
+                cx.stop_propagation();
+                return;
+            }
             if self.detail_action_key(key, window, cx) {
                 cx.stop_propagation();
                 cx.notify();
+                return;
+            }
+            if self.settings_key(key, window, cx) {
+                cx.stop_propagation();
                 return;
             }
             if matches!(key, "up" | "down" | "left" | "right") {
@@ -1634,14 +1876,14 @@ impl Library {
             match key {
                 "escape" | "backspace" => self.back(window, cx),
                 "f11" => window.toggle_fullscreen(),
-                "/" => self.navigate(
-                    Screen::Search(self.search.read(cx).value().trim().to_owned()),
-                    window,
-                    cx,
-                ),
+                "/" => self.navigate(Screen::Search(String::new()), window, cx),
                 _ if matches!(self.state.screen, Screen::Discover) => {
                     self.shelf_light.hovered = None;
                     match (key, self.state.shelf) {
+                        ("up", None) => {
+                            self.navigation_focus.focus(window);
+                            window.focus_next();
+                        }
                         ("down" | "pagedown", None) if !self.shelves.is_empty() => {
                             self.change_shelf(0, cx)
                         }

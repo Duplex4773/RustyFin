@@ -44,7 +44,12 @@ impl Trickplay {
 }
 
 impl Library {
-    pub(super) fn load_trickplay(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn load_trickplay(
+        &mut self,
+        controls_visible: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let item = self.playing.as_ref();
         let frame = self
             .player
@@ -52,13 +57,13 @@ impl Library {
             .filter(|p| {
                 p.seekable
                     && !p.audio_only
-                    && (p.controls_visible || self.controls.remote_scrub)
+                    && controls_visible
                     && !p.panel_open
                     && self.downloads.playing.is_none()
             })
             .zip(item)
             .and_then(|(player, item)| {
-                let at = f64::from(self.scrub.or(self.controls.hover)?) * player.status.duration;
+                let at = f64::from(self.seek_preview_fraction(player, w)?) * player.status.duration;
                 item.trickplay_frame(
                     &self.controls.source,
                     at,

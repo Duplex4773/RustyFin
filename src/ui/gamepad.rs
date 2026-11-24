@@ -80,6 +80,30 @@ pub(super) fn listen(w: &Window, cx: &mut Context<Library>) {
                         if keys & button.0 == 0 {
                             continue;
                         }
+                        let handled = view.update(cx, |s, cx| {
+                            if let Some(p) = s.player.as_mut().filter(|_| !s.controls.mini) {
+                                p.use_keyboard_controls();
+                                cx.notify();
+                            }
+                            if s.server.is_some()
+                                && matches!(s.state.screen, Screen::Settings(_))
+                                && (s.player.is_none() || s.controls.mini)
+                                && !s.navigation_focus.contains_focused(w, cx)
+                                && s.rebind.is_none()
+                            {
+                                if s.settings_key(name, w, cx) {
+                                    return true;
+                                }
+                                if name == "escape" {
+                                    s.back(w, cx);
+                                    return true;
+                                }
+                            }
+                            s.controller_search_key(name, w, cx)
+                        });
+                        if handled.unwrap_or(false) {
+                            continue;
+                        }
                         match name {
                             "settings" | "preview" => {
                                 let _ = view.update(cx, |s, cx| {
@@ -89,13 +113,15 @@ pub(super) fn listen(w: &Window, cx: &mut Context<Library>) {
                                         } else {
                                             s.start_preview(w, cx);
                                         }
+                                    } else if name == "preview" && s.popup_menu.is_none() {
+                                        s.focused_continue_actions(w, cx);
                                     }
                                 });
                             }
                             "tab" | "shift-tab" => {
                                 let _ = view.update(cx, |s, cx| {
-                                    if s.player.as_ref().is_some_and(|p| p.panel_open) {
-                                        s.move_menu_focus(name == "tab", w, cx);
+                                    if s.player.is_some() && !s.controls.mini {
+                                        s.step_player_focus(name == "tab", w, cx);
                                     } else if name == "tab" {
                                         w.focus_next();
                                     } else {

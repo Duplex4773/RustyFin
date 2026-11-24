@@ -14,12 +14,84 @@ pub enum Channels {
     Stereo,
     Surround,
 }
-#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Shader {
     #[default]
     Off,
     Sharpen,
     Soften,
+    ArtCnn16,
+    ArtCnn32,
+    ArtCnn16Ds,
+    Fsrcnnx8,
+    Fsrcnnx16,
+    RavuLite,
+    Anime4k,
+    Custom(PathBuf),
+}
+
+impl Shader {
+    pub const PRESETS: &[Self] = &[
+        Self::Off,
+        Self::Fsrcnnx8,
+        Self::Fsrcnnx16,
+        Self::RavuLite,
+        Self::ArtCnn16,
+        Self::ArtCnn32,
+        Self::ArtCnn16Ds,
+        Self::Anime4k,
+        Self::Sharpen,
+        Self::Soften,
+    ];
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Off => "Off",
+            Self::Sharpen => "Sharpen",
+            Self::Soften => "Soften",
+            Self::ArtCnn16 => "ArtCNN C4F16",
+            Self::ArtCnn32 => "ArtCNN C4F32",
+            Self::ArtCnn16Ds => "ArtCNN C4F16 DS",
+            Self::Fsrcnnx8 => "FSRCNNX 8",
+            Self::Fsrcnnx16 => "FSRCNNX 16",
+            Self::RavuLite => "RAVU Lite AR",
+            Self::Anime4k => "Anime4K ×2",
+            Self::Custom(path) => path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Custom shader"),
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Off => "Standard mpv scaling",
+            Self::Sharpen | Self::Soften => "All output sizes",
+            Self::Fsrcnnx8 => "Live action · Balanced",
+            Self::Fsrcnnx16 => "Live action · Higher GPU cost",
+            Self::RavuLite => "Live action · Anti-ringing",
+            Self::ArtCnn16 => "Animation · Balanced",
+            Self::ArtCnn32 => "Animation · Higher GPU cost",
+            Self::ArtCnn16Ds => "Denoise and sharpen",
+            Self::Anime4k => "Animation · CNN upscaling",
+            Self::Custom(_) => "Custom file",
+        }
+    }
+
+    pub fn asset(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Off | Self::Custom(_) => return None,
+            Self::Sharpen => "sharpen.glsl",
+            Self::Soften => "soften.glsl",
+            Self::ArtCnn16 => "ArtCNN_C4F16.glsl",
+            Self::ArtCnn32 => "ArtCNN_C4F32.glsl",
+            Self::ArtCnn16Ds => "ArtCNN_C4F16_DS.glsl",
+            Self::Fsrcnnx8 => "FSRCNNX_x2_8-0-4-1.glsl",
+            Self::Fsrcnnx16 => "FSRCNNX_x2_16-0-4-1.glsl",
+            Self::RavuLite => "ravu-lite-ar-r3.hook",
+            Self::Anime4k => "Anime4K_Upscale_CNN_x2_M.glsl",
+        })
+    }
 }
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub enum SubtitleStyle {
@@ -35,6 +107,7 @@ pub struct MpvSettings {
     pub normalize: bool,
     pub center: bool,
     pub shader: Shader,
+    pub custom_shaders: Vec<PathBuf>,
     pub subtitle: SubtitleStyle,
 }
 
@@ -99,6 +172,11 @@ fn directory() -> Result<PathBuf> {
 pub fn account_path(server: &str, user: &str) -> Result<PathBuf> {
     let key = Sha256::digest(format!("{server}\0{user}").as_bytes());
     Ok(directory()?.join(format!("{key:x}")))
+}
+pub fn shader_cache_path() -> Result<PathBuf> {
+    let path = directory()?.join("mpv-shader-cache");
+    fs::create_dir_all(&path)?;
+    Ok(path)
 }
 pub fn item_key(id: &str) -> String {
     format!("{:x}", Sha256::digest(id.as_bytes()))

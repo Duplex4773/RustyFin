@@ -7,39 +7,60 @@ impl Account {
     }
 }
 
-pub fn discover(primary: &Server, others: &[Server]) -> Result<(Vec<Shelf>, Vec<String>)> {
-    let mut shelves: Vec<Shelf> = vec![];
-    let mut warnings = Vec::new();
-    let mut answered = false;
-    for source in std::iter::once(primary).chain(others) {
-        let batch = match source.discover() {
-            Ok(v) => {
-                answered = true;
-                v
-            }
-            Err(e) if others.is_empty() => return Err(e),
-            Err(_) => {
-                warnings.push(source.host().to_owned());
-                continue;
-            }
-        };
-        let origin = source.identity().map(Account::key);
-        for mut row in batch {
-            for item in &mut row.items {
-                item.origin.clone_from(&origin);
-            }
-            if let Some(target) = shelves.iter_mut().find(|s| s.kind == row.kind) {
-                target.items.append(&mut row.items);
-            } else {
-                shelves.push(row);
-            }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HomeFeed {
+    Resume,
+    NextUp,
+    RecentTv,
+    RecentMovies,
+}
+
+impl HomeFeed {
+    pub const ALL: [Self; 4] = [
+        Self::Resume,
+        Self::NextUp,
+        Self::RecentTv,
+        Self::RecentMovies,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Resume => "In progress",
+            Self::NextUp => "Next Up",
+            Self::RecentTv => ShelfKind::RecentTv.title(),
+            Self::RecentMovies => ShelfKind::RecentMovies.title(),
         }
     }
-    ensure!(answered, "No connected Jellyfin server answered Discover.");
+}
+
+pub fn home_shelves<'a>(
+    sources: impl Iterator<Item = [&'a [Item]; 4]>,
+    federated: bool,
+) -> Vec<Shelf> {
+    let mut watching = Vec::new();
+    let mut shows = Vec::new();
+    let mut films = Vec::new();
+    for [resume, next, tv, movies] in sources {
+        watching.extend(catalog::continue_watching(resume.to_vec(), next.to_vec()));
+        shows.extend_from_slice(tv);
+        films.extend_from_slice(movies);
+    }
+    let mut shelves = vec![
+        Shelf {
+            kind: ShelfKind::Continue,
+            items: copies(watching),
+        },
+        Shelf {
+            kind: ShelfKind::RecentTv,
+            items: shows,
+        },
+        Shelf {
+            kind: ShelfKind::RecentMovies,
+            items: films,
+        },
+    ];
     for row in &mut shelves {
-        if row.kind == ShelfKind::Continue {
-            row.items = copies(std::mem::take(&mut row.items));
-        } else if !others.is_empty() {
+        if federated && row.kind != ShelfKind::Continue {
             row.items.sort_by_cached_key(|item| {
                 let added = match row.kind {
                     ShelfKind::RecentTv => item
@@ -56,7 +77,8 @@ pub fn discover(primary: &Server, others: &[Server]) -> Result<(Vec<Shelf>, Vec<
         }
         row.items.truncate(24);
     }
-    Ok((shelves, warnings))
+    shelves.retain(|row| !row.items.is_empty());
+    shelves
 }
 
 // Jellyfin installations can have different subsets of provider IDs for the same title.
@@ -98,24 +120,70 @@ fn copies(items: Vec<Item>) -> Vec<Item> {
     groups.into_iter().map(|(_, item)| item).collect()
 }
 
-pub fn search(
-    servers: &[Server],
-    term: &str,
-    people: bool,
-    offset: usize,
-) -> Result<(Page, Vec<String>)> {
-    combined_page(servers, offset, |server, start| {
-        if people {
-            server.people(term, start)
-        } else {
-            server.catalog(&CatalogQuery::default(), Some(term), start, PAGE_SIZE)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SearchGroup {
+    Movies,
+    Shows,
+    Episodes,
+    People,
+    Music,
+    Videos,
+}
+
+impl SearchGroup {
+    pub const ALL: [Self; 6] = [
+        Self::Movies,
+        Self::Shows,
+        Self::Episodes,
+        Self::People,
+        Self::Music,
+        Self::Videos,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Movies => "Movies",
+            Self::Shows => "Shows",
+            Self::Episodes => "Episodes",
+            Self::People => "People",
+            Self::Music => "Music",
+            Self::Videos => "Videos",
         }
-    })
+    }
+
+    pub fn search(
+        self,
+        servers: &[Server],
+        term: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Page, Vec<String>)> {
+        let kinds = match self {
+            Self::Movies => "Movie",
+            Self::Shows => "Series",
+            Self::Episodes => "Episode",
+            Self::People => "Person",
+            Self::Music => "MusicAlbum,MusicArtist,Audio",
+            Self::Videos => "Video,MusicVideo",
+        };
+        combined_page_limit(servers, offset, limit, |server, start| {
+            server.search_group(kinds, term, start, limit)
+        })
+    }
 }
 
 pub fn combined_page(
     servers: &[Server],
     offset: usize,
+    get: impl Fn(&Server, usize) -> Result<Page>,
+) -> Result<(Page, Vec<String>)> {
+    combined_page_limit(servers, offset, PAGE_SIZE, get)
+}
+
+fn combined_page_limit(
+    servers: &[Server],
+    offset: usize,
+    limit: usize,
     get: impl Fn(&Server, usize) -> Result<Page>,
 ) -> Result<(Page, Vec<String>)> {
     let mut items = Vec::new();
@@ -132,12 +200,12 @@ pub fn combined_page(
             }
         };
         total += page.total_record_count;
-        if items.len() < PAGE_SIZE {
+        if items.len() < limit {
             let key = server.identity().map(Account::key);
             items.extend(
                 page.items
                     .into_iter()
-                    .take(PAGE_SIZE - items.len())
+                    .take(limit - items.len())
                     .map(|mut i| {
                         i.origin = key.clone();
                         i
