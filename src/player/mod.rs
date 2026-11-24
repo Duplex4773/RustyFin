@@ -4,13 +4,15 @@ mod local;
 mod mel;
 pub use mel::LayerError;
 mod mpv;
+pub use mpv::Metric;
 pub use mpv::ShaderStatus;
 mod native;
+mod performance;
 mod refresh;
 pub mod transport;
 pub use native::OutputLost;
 
-use crate::jellyfin::{PlayRequest, Route, Server};
+use crate::jellyfin::{PlayRequest, Route, Server, Source};
 use crate::preferences::Shader;
 use anyhow::{Context, Result, ensure};
 use gpui::Window;
@@ -120,6 +122,10 @@ pub struct Player {
     engine: Engine,
     surface: Surface,
     pub label: String,
+    pub source: Source,
+    pub route_notice: Option<&'static str>,
+    pub performance: performance::Performance,
+    pub local_file: bool,
     pub status: Status,
     refresh: Option<refresh::RefreshMatch>,
     pub transport: Option<transport::Transport>,
@@ -191,7 +197,7 @@ impl Player {
         });
         let ids = (
             request.item.clone(),
-            request.source.clone(),
+            request.source.id.clone(),
             request.session.clone(),
         );
         let seekable = request.seekable;
@@ -227,6 +233,8 @@ impl Player {
             transport::Transport::new(parent(window)?, item, request.audio_only, seekable)
                 .map_err(|e| eprintln!("Windows media controls unavailable: {e:#}"))
                 .ok();
+        let mut performance = performance::Performance::default();
+        performance.set_enabled(prefs.performance_overlay);
         Ok(Self {
             transport,
             refresh: request
@@ -236,6 +244,10 @@ impl Player {
             engine,
             surface,
             label,
+            source: request.source.clone(),
+            route_notice: request.route.startup_notice(),
+            local_file: !online,
+            performance,
             report,
             size,
             reported_start: false,
@@ -268,6 +280,11 @@ impl Player {
         self.wake_controls();
     }
 
+    pub fn use_pointer_controls(&mut self) {
+        self.keyboard_controls = false;
+        self.wake_controls();
+    }
+
     pub fn keyboard_controls(&self) -> bool {
         self.keyboard_controls
     }
@@ -282,8 +299,7 @@ impl Player {
         }
         let repaint =
             self.keyboard_controls || self.controls.last_activity.elapsed() >= CONTROLS_IDLE;
-        self.keyboard_controls = false;
-        self.wake_controls();
+        self.use_pointer_controls();
         repaint
     }
 
@@ -326,7 +342,14 @@ impl Player {
             self.size = size;
         }
         let s = match &mut self.engine {
-            Engine::Mpv(p) => p.poll(self.panel_open && !self.audio_only)?,
+            Engine::Mpv(p) => {
+                let status =
+                    p.poll((self.panel_open || self.performance.enabled) && !self.audio_only)?;
+                if self.performance.enabled && status.ready && !status.ended {
+                    p.probe_performance();
+                }
+                status
+            }
             Engine::Native(p) => {
                 let status = p.poll()?;
                 self.label = p.label();
@@ -345,6 +368,13 @@ impl Player {
         let pause_changed = s.paused != self.status.paused;
         let last_position = self.status.position;
         self.status = s;
+        if self.performance.due() {
+            let native = match &self.engine {
+                Engine::Native(p) => Some(p),
+                Engine::Mpv(_) => None,
+            };
+            self.performance.sample(self.surface.0, native);
+        }
         if s.ended && s.position <= 0.0 {
             self.status.position = last_position;
         }
@@ -386,6 +416,13 @@ impl Player {
         match &self.engine {
             Engine::Native(p) => p.audio_output(),
             Engine::Mpv(p) => p.audio_output(),
+        }
+    }
+
+    pub fn metric(&self, metric: Metric) -> Option<&str> {
+        match &self.engine {
+            Engine::Mpv(p) => p.metric(metric),
+            Engine::Native(_) => None,
         }
     }
 
@@ -465,6 +502,16 @@ impl Player {
         match &self.engine {
             Engine::Mpv(p) => p.seek(seconds),
             Engine::Native(p) => p.seek(seconds),
+        }
+    }
+
+    pub fn seek_to(&self, seconds: f64) -> Result<()> {
+        if !self.seekable {
+            return Ok(());
+        }
+        match &self.engine {
+            Engine::Mpv(p) => p.seek_to(seconds.max(0.)),
+            Engine::Native(p) => p.seek_to(seconds),
         }
     }
 }

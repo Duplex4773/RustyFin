@@ -380,6 +380,33 @@ impl Native {
     pub fn has_pcm_output(&self) -> bool {
         self.audio > 0
     }
+
+    pub(super) fn performance_counters(&self) -> (Option<u32>, Option<u32>, Option<f64>) {
+        if !self.started {
+            return (None, None, None);
+        }
+        let frames = |kind| unsafe {
+            let mut statistic = self.engine.GetStatistics(kind).ok()?;
+            let count = PropVariantToUInt32(&statistic).ok();
+            let _ = PropVariantClear(&mut statistic);
+            count
+        };
+        let buffered = unsafe {
+            let position = self.engine.GetCurrentTime();
+            self.engine.GetBuffered().ok().and_then(|ranges| {
+                (0..ranges.GetLength()).find_map(|i| {
+                    let (start, end) = (ranges.GetStart(i).ok()?, ranges.GetEnd(i).ok()?);
+                    (position >= start && position <= end && end.is_finite())
+                        .then_some(end - position)
+                })
+            })
+        };
+        (
+            frames(MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED),
+            frames(MF_MEDIA_ENGINE_STATISTIC_FRAMES_DROPPED),
+            buffered,
+        )
+    }
     pub fn set_volume(&self, volume: f64) -> Result<()> {
         unsafe {
             self.engine.SetVolume(volume)?;
@@ -432,15 +459,19 @@ impl Native {
     }
     pub fn seek(&self, seconds: f64) -> Result<()> {
         if self.started {
+            self.seek_to(unsafe { self.engine.GetCurrentTime() } + seconds)?;
+        }
+        Ok(())
+    }
+
+    pub fn seek_to(&self, seconds: f64) -> Result<()> {
+        if self.started {
             unsafe {
                 if let Some(s) = &self.source {
                     s.clock(self.engine.GetCurrentTime(), false);
                 }
-                self.engine.SetCurrentTime(
-                    (self.engine.GetCurrentTime() + seconds)
-                        .max(0.0)
-                        .min(self.engine.GetDuration()),
-                )?;
+                self.engine
+                    .SetCurrentTime(seconds.max(0.0).min(self.engine.GetDuration()))?;
             }
         }
         Ok(())

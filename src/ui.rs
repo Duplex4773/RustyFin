@@ -5,6 +5,7 @@ mod catalog_wall;
 mod customization;
 mod downloads;
 mod editor;
+mod episodes;
 mod explore;
 mod formats;
 mod gamepad;
@@ -1274,7 +1275,7 @@ impl Library {
                                 if let Some(end) = this
                                     .controls
                                     .auto_skip_target(player.status.position, offer_choice)
-                                    && let Err(e) = player.seek(end - player.status.position)
+                                    && let Err(e) = player.seek_to(end)
                                 {
                                     this.controls.warning = e.to_string();
                                 }
@@ -1386,7 +1387,7 @@ impl Library {
             self.failure = self.playing.as_ref().map(|item| playback::Retry {
                 item: item.clone(),
                 choice: MediaChoice {
-                    source: (item.kind != "TvChannel").then(|| request.source.clone()),
+                    source: (item.kind != "TvChannel").then(|| request.source.id.clone()),
                     audio: request.audio_index,
                     subtitle: Some(request.subtitle_index.unwrap_or(-1)),
                 },
@@ -1409,6 +1410,7 @@ impl Library {
 
     fn release_player(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.controls.episodes = Default::default();
         self.end_preview();
         let Some(player) = self.player.take() else {
             return;
@@ -1617,12 +1619,23 @@ impl Library {
     }
 
     fn control(&mut self, seek: Option<f64>, cx: &mut Context<Self>) {
-        if let Some(p) = &self.player
-            && let Err(e) = match seek {
+        if let Some(p) = &self.player {
+            let result = match seek {
                 Some(n) => p.seek(n),
                 None => p.toggle(),
-            }
-        {
+            };
+            self.control_result(result, cx);
+        }
+    }
+
+    fn seek_to(&mut self, seconds: f64, cx: &mut Context<Self>) {
+        if let Some(p) = &self.player {
+            self.control_result(p.seek_to(seconds), cx);
+        }
+    }
+
+    fn control_result(&mut self, result: Result<()>, cx: &mut Context<Self>) {
+        if let Err(e) = result {
             self.stop();
             self.message = format!("{e:#}");
         }
@@ -1649,6 +1662,17 @@ impl Library {
         }
         if self.player.as_ref().is_some_and(|p| p.panel_open) {
             match key {
+                "space"
+                    if self.menu_focus.scope.is_focused(window)
+                        || self.focus.is_focused(window) =>
+                {
+                    self.control(None, cx)
+                }
+                "up" | "down" | "pageup" | "pagedown" | "home" | "end"
+                    if self.controls.menu == PlayerMenu::Info =>
+                {
+                    self.scroll_file_info(key, cx)
+                }
                 "up" | "left" | "down" | "right" | "tab" => {
                     let forward = matches!(key, "down" | "right")
                         || (key == "tab" && !event.keystroke.modifiers.shift);
@@ -1681,10 +1705,7 @@ impl Library {
                     if let Some(f) = self.scrub
                         && let Some(p) = &self.player
                     {
-                        self.control(
-                            Some(f64::from(f) * p.status.duration - p.status.position),
-                            cx,
-                        );
+                        self.seek_to(f64::from(f) * p.status.duration, cx);
                     }
                     self.end_preview();
                 }
@@ -1797,6 +1818,9 @@ impl Library {
                 "fullscreen" => window.toggle_fullscreen(),
                 "preview" => self.start_preview(window, cx),
                 "options" => self.toggle_player_menu(PlayerMenu::Settings, window, cx),
+                "episodes" if self.has_episode_drawer() => {
+                    self.toggle_player_menu(PlayerMenu::Episodes, window, cx);
+                }
                 "zoom-in" | "zoom-out" => {
                     if let Some(p) = &self.player
                         && p.mpv()

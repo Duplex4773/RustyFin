@@ -20,15 +20,23 @@ pub(super) enum PlayerMenu {
     Audio,
     Subtitles,
     Chapters,
+    Episodes,
+    EpisodeSeasons,
     Queue,
     Info,
+}
+
+impl PlayerMenu {
+    pub(super) fn episode_drawer(self) -> bool {
+        matches!(self, Self::Episodes | Self::EpisodeSeasons)
+    }
 }
 
 pub(super) struct MenuFocus {
     pub scope: FocusHandle,
     pub current: FocusHandle,
     pub close: FocusHandle,
-    launchers: [FocusHandle; 3],
+    launchers: [FocusHandle; 4],
     pub volume: FocusHandle,
     pub timeline: FocusHandle,
     pub play_pause: FocusHandle,
@@ -47,15 +55,16 @@ impl MenuFocus {
     pub fn new(cx: &mut Context<Library>) -> Self {
         Self {
             scope: cx.focus_handle(),
-            current: cx.focus_handle(),
-            close: cx.focus_handle(),
-            launchers: std::array::from_fn(|_| cx.focus_handle()),
-            volume: cx.focus_handle(),
-            timeline: cx.focus_handle(),
-            play_pause: cx.focus_handle(),
-            fullscreen: cx.focus_handle(),
-            next: cx.focus_handle(),
-            credits: cx.focus_handle(),
+            // GPUI uses the tab-stop setting from the tracked handle.
+            current: cx.focus_handle().tab_stop(true),
+            close: cx.focus_handle().tab_stop(true),
+            launchers: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            volume: cx.focus_handle().tab_stop(true),
+            timeline: cx.focus_handle().tab_stop(true),
+            play_pause: cx.focus_handle().tab_stop(true),
+            fullscreen: cx.focus_handle().tab_stop(true),
+            next: cx.focus_handle().tab_stop(true),
+            credits: cx.focus_handle().tab_stop(true),
             rows: Default::default(),
             scroll: ScrollHandle::new(),
             entering: Default::default(),
@@ -69,18 +78,24 @@ impl MenuFocus {
         &self.launchers[match page {
             PlayerMenu::Subtitles => 1,
             PlayerMenu::Audio => 2,
+            PlayerMenu::Episodes => 3,
             _ => 0,
         }]
     }
 
-    pub fn reveal(&self, w: &Window, cx: &App, warning: bool) {
+    pub fn reveal(&self, w: &Window, cx: &App, warning: bool, at_top: bool) {
         if let Some(index) = self
             .rows
             .borrow()
             .iter()
             .position(|row| row.contains_focused(w, cx))
         {
-            self.scroll.scroll_to_item(index + usize::from(warning));
+            let index = index + usize::from(warning);
+            if at_top {
+                self.scroll.scroll_to_top_of_item(index);
+            } else {
+                self.scroll.scroll_to_item(index);
+            }
         }
     }
 }
@@ -105,7 +120,10 @@ pub(super) struct Controls {
     pub delay: f64,
     pub subtitle_delay: f64,
     pub menu: PlayerMenu,
+    pub episodes: super::episodes::EpisodeDrawer,
     pub next_episode: Option<Item>,
+    pub previous_episode: Option<Item>,
+    pub episode_hover: Option<(EpisodeDirection, Instant)>,
     pub next_lookup_finished: bool,
     pub watching_credits: bool,
     pub sleep: Option<Instant>,
@@ -114,6 +132,12 @@ pub(super) struct Controls {
     pub outro_deadline: Option<(u64, f64)>,
     pub warning: String,
     pub profile_notice: Option<(&'static str, Instant)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EpisodeDirection {
+    Previous,
+    Next,
 }
 impl Controls {
     pub(super) fn auto_skip_target(&mut self, position: f64, offer_choice: bool) -> Option<f64> {
@@ -211,7 +235,7 @@ impl Server {
             request.subtitle_index = None;
             request.external_subtitle = None;
         } else if native && let Some(index) = request.subtitle_index {
-            match self.captions(&item.id, &request.source, index) {
+            match self.captions(&item.id, &request.source.id, index) {
                 Ok(vtt) => captions = Captions::parse(&vtt),
                 Err(error) => {
                     choice.subtitle = Some(-1);
@@ -382,12 +406,7 @@ impl Library {
             return;
         };
         self.downloads.playing = None;
-        self.controls.next_episode = None;
-        self.controls.next_lookup_finished = false;
-        self.controls.watching_credits = false;
-        self.controls.outro_deadline = None;
-        self.controls.skipped = None;
-        self.controls.profile_notice = None;
+        self.reset_episode_transition();
         let prefs = self.prefs.clone();
         self.work(
             w,
@@ -396,16 +415,92 @@ impl Library {
             Self::play_prepared,
         );
     }
+
+    fn reset_episode_transition(&mut self) {
+        self.controls.next_episode = None;
+        self.controls.previous_episode = None;
+        self.controls.episode_hover = None;
+        self.controls.next_lookup_finished = false;
+        self.controls.watching_credits = false;
+        self.controls.outro_deadline = None;
+        self.controls.skipped = None;
+        self.controls.profile_notice = None;
+    }
+
+    pub(super) fn play_drawer_episode(
+        &mut self,
+        index: usize,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = self.controls.episodes.items().get(index).cloned() else {
+            return;
+        };
+        if self.playing.as_ref().is_some_and(|i| i.id == item.id) {
+            self.back_player_menu(w, cx);
+            return;
+        }
+        self.play_episode(item, w, cx);
+    }
+
+    fn play_episode(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.downloads.playing.is_some() {
+            let ready = self.downloads.profile.as_ref().and_then(|profile| {
+                self.downloads
+                    .records
+                    .iter()
+                    .find(|d| d.item.id == item.id && d.ready(profile))
+            });
+            if let Some(download) = ready.cloned() {
+                self.play_download(download, w, cx);
+            } else {
+                self.controls.warning = "This episode is no longer available offline.".into();
+                cx.notify();
+            }
+            return;
+        }
+        let Some(server) = self.server.clone() else {
+            return;
+        };
+        let prefs = self.prefs.clone();
+        let generation = self.generation;
+        self.controls.warning.clear();
+        self.work(
+            w,
+            cx,
+            move || Ok(server.prepare(item, None, prefs, None)),
+            move |s, prepared, w, cx| {
+                if s.generation != generation {
+                    return Ok(());
+                }
+                match prepared {
+                    Ok(prepared) => {
+                        s.release_player();
+                        s.reset_episode_transition();
+                        s.controls.queue = None;
+                        s.play_prepared(prepared, w, cx)
+                    }
+                    Err(error) => {
+                        s.controls.warning = format!("Could not open the episode. {error:#}");
+                        Ok(())
+                    }
+                }
+            },
+        );
+    }
     fn play_prepared(
         &mut self,
         prepared: Prepared,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.controls.source != prepared.request.source {
+        if self.controls.source != prepared.request.source.id {
             self.controls.profile_notice = None;
         }
-        self.controls.source = prepared.request.source.clone();
+        self.controls.source = prepared.request.source.id.clone();
         self.controls.choice = prepared.choice;
         if !prepared.request.audio_only {
             self.controls.mini = false;
@@ -567,11 +662,43 @@ impl Library {
         }
     }
 
-    pub(super) fn load_next_episode(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if self.controls.queue.is_some()
-            || self.downloads.playing.is_some()
-            || self.controls.next_lookup_finished
+    pub(super) fn episode_target(&self, direction: EpisodeDirection) -> Option<&Item> {
+        match direction {
+            EpisodeDirection::Previous => self.controls.previous_episode.as_ref(),
+            EpisodeDirection::Next => self
+                .next_title()
+                .filter(|item| item.kind == "Episode")
+                .or(self.controls.next_episode.as_ref()),
+        }
+    }
+
+    pub(super) fn navigate_episode(
+        &mut self,
+        direction: EpisodeDirection,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.player.is_none() {
+            return;
+        }
+        let Some(item) = self.episode_target(direction).cloned() else {
+            return;
+        };
+        self.controls.episode_hover = None;
+        let queued = self.controls.queue.is_some()
+            || self.downloads.playing.is_some() && !self.downloads.queue.is_empty();
+        if direction == EpisodeDirection::Next
+            && queued
+            && self.next_title().is_some_and(|next| next.id == item.id)
         {
+            self.advance(w, cx);
+        } else {
+            self.play_episode(item, w, cx);
+        }
+    }
+
+    pub(super) fn load_next_episode(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.controls.next_lookup_finished {
             return;
         }
         let Some(item) = self.playing.clone().filter(|i| i.kind == "Episode") else {
@@ -581,15 +708,55 @@ impl Library {
             return;
         };
         let generation = self.generation;
-        let worker = cx
-            .background_executor()
-            .spawn(async move { server.next_episode(&item) });
+        let offline = self
+            .downloads
+            .playing
+            .as_ref()
+            .and(self.downloads.profile.as_ref())
+            .map(|profile| {
+                let candidates = self
+                    .downloads
+                    .records
+                    .iter()
+                    .filter(|d| {
+                        d.item.kind == "Episode"
+                            && d.item.series_id.is_some()
+                            && d.item.series_id == item.series_id
+                            && d.item.id != item.id
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (profile.clone(), candidates)
+            });
+        let worker = cx.background_executor().spawn(async move {
+            if let Some((profile, candidates)) = offline {
+                let sort = |episode: &Item| episode.parent_index_number.zip(episode.index_number);
+                let Some(at) = sort(&item) else {
+                    return Ok((None, None));
+                };
+                let mut previous = None;
+                let mut next = None;
+                for download in candidates.into_iter().filter(|d| d.ready(&profile)) {
+                    if let Some(key) = sort(&download.item) {
+                        if key < at && previous.as_ref().is_none_or(|(then, _)| key > *then) {
+                            previous = Some((key, download.item));
+                        } else if key > at && next.as_ref().is_none_or(|(then, _)| key < *then) {
+                            next = Some((key, download.item));
+                        }
+                    }
+                }
+                Ok((previous.map(|(_, i)| i), next.map(|(_, i)| i)))
+            } else {
+                server.episode_neighbors(&item)
+            }
+        });
         cx.spawn_in(w, async move |view, cx| {
             let result = worker.await;
             let _ = view.update(cx, |s, cx| {
                 if s.generation == generation {
                     s.controls.next_lookup_finished = result.is_ok();
-                    s.controls.next_episode = result.ok().flatten();
+                    (s.controls.previous_episode, s.controls.next_episode) =
+                        result.unwrap_or_default();
                     cx.notify();
                 }
             });

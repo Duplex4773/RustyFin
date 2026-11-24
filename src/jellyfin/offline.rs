@@ -106,10 +106,8 @@ impl Download {
         all.sort_by_key(|d| d.queued);
         Ok(all)
     }
-    pub fn local(&self, profile: &Path) -> Result<(Item, PlayRequest, String)> {
+    pub fn item_with_progress(&self, profile: &Path) -> Result<Item> {
         let dir = self.dir(profile);
-        let file = dir.join("original");
-        ensure!(file.is_file(), "This download is incomplete.");
         let mut item = self.item.clone();
         let _lock = progress_lock(&dir)?;
         let pending = dir.join("pending.json");
@@ -124,6 +122,14 @@ impl Download {
             data.playback_position_ticks = Some(progress.ticks);
             data.played = Some(progress.played);
         }
+        Ok(item)
+    }
+
+    pub fn local(&self, profile: &Path) -> Result<(Item, PlayRequest, String)> {
+        let dir = self.dir(profile);
+        let file = dir.join("original");
+        ensure!(file.is_file(), "This download is incomplete.");
+        let item = self.item_with_progress(profile)?;
         let sub = dir.join("subtitles.vtt");
         let vtt = if sub.is_file() {
             fs::read_to_string(&sub)?
@@ -139,12 +145,14 @@ impl Download {
         let local_url = |path: &Path| {
             Url::from_file_path(path).map_err(|_| anyhow::anyhow!("Invalid download path."))
         };
+        let mut source = self.source.clone();
+        source.path = Some(file.to_string_lossy().into_owned());
         let req = PlayRequest {
             seekable: true,
             frame_rate: self.source.frame_rate(),
             url: local_url(&file)?,
             route: self.route.clone(),
-            source: self.source.id.clone(),
+            source,
             session: uuid::Uuid::new_v4().to_string(),
             item: item.id.clone(),
             audio_index: self.audio,
@@ -207,7 +215,7 @@ impl Server {
         let req = self.playback(item, choice)?;
         let folder = profile
             .join("downloads")
-            .join(preferences::item_key(&req.source));
+            .join(preferences::item_key(&req.source.id));
         let path = folder.join("metadata.json");
         if path.is_file() {
             let record: Download = serde_json::from_reader(File::open(path)?)?;
@@ -226,7 +234,7 @@ impl Server {
             .media_sources
             .iter()
             .flatten()
-            .find(|s| s.id == req.source)
+            .find(|s| s.id == req.source.id)
             .cloned()
             .context("The source is no longer available.")?;
         source.path = None;

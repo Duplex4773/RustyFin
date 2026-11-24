@@ -23,7 +23,11 @@ impl Stream {
         let width = self.width.unwrap_or(0);
         let height = self.height.unwrap_or(0);
         // Width also identifies cinema crops such as 3840 × 1600.
-        let scan = if self.is_interlaced { 'i' } else { 'p' };
+        let scan = if self.is_interlaced == Some(true) {
+            'i'
+        } else {
+            'p'
+        };
         if width >= 7600 || height >= 4320 {
             Some("8K".into())
         } else if width >= 3800 || height >= 2160 {
@@ -41,7 +45,7 @@ impl Stream {
         }
     }
 
-    fn range(&self) -> Option<String> {
+    pub(crate) fn range(&self) -> Option<String> {
         if self.is_dolby_vision() {
             return Some("DV".into());
         }
@@ -57,7 +61,7 @@ impl Stream {
         })
     }
 
-    fn codec_name(&self) -> Option<String> {
+    pub(crate) fn codec_name(&self) -> Option<String> {
         let codec = self.codec.as_ref()?.trim().to_ascii_uppercase();
         match codec.as_str() {
             "" | "UNKNOWN" => None,

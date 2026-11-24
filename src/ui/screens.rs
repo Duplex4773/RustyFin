@@ -1331,6 +1331,7 @@ impl Render for Library {
                 let interacting = self.scrub.is_some()
                     || self.controls.hover.is_some()
                     || self.controls.volume_hovered
+                    || self.controls.episode_hover.is_some()
                     || rail_focused;
                 p.controls_opacity(interacting, self.controls.animate_chrome, w)
             });

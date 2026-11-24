@@ -66,6 +66,33 @@ impl Library {
             return;
         }
         let mut plan = Vec::new();
+        if self.player.is_some() && self.has_episode_drawer() {
+            use super::playback::EpisodeDirection;
+            plan.extend(
+                [EpisodeDirection::Previous, EpisodeDirection::Next]
+                    .into_iter()
+                    .filter_map(|direction| {
+                        self.episode_target(direction).and_then(Item::landscape)
+                    }),
+            );
+        }
+        if self.player.as_ref().is_some_and(|p| p.panel_open)
+            && self.controls.menu == super::PlayerMenu::Episodes
+        {
+            let scroll = &self.menu_focus.scroll;
+            let height = super::episodes::EPISODE_ROW_HEIGHT;
+            let first = (-f32::from(scroll.offset().y) / height) as usize;
+            let count = (f32::from(scroll.bounds().size.height) / height).ceil() as usize + 3;
+            plan.extend(
+                self.controls
+                    .episodes
+                    .items()
+                    .iter()
+                    .skip(first.saturating_sub(1))
+                    .take(count)
+                    .filter_map(Item::landscape),
+            );
+        }
         if self.player.is_some()
             && let Some(next) = self.next_title()
         {

@@ -546,6 +546,37 @@ impl Server {
         Ok(page.items)
     }
 
+    fn episode_request(
+        &self,
+        series: &str,
+        season: Option<&str>,
+    ) -> reqwest::blocking::RequestBuilder {
+        let request = self.get(&["Shows", series, "Episodes"]);
+        match season {
+            Some(id) => request.query(&[("seasonId", id)]),
+            None => request,
+        }
+    }
+
+    pub fn season_episodes(&self, series: &str, season: Option<&str>) -> Result<Vec<Item>> {
+        let user = self.user_id()?;
+        let mut items = Vec::new();
+        loop {
+            let page: Page = read(self.episode_request(series, season).query(&[
+                ("userId", user),
+                ("isMissing", "false"),
+                ("fields", "Overview"),
+                ("startIndex", &items.len().to_string()),
+                ("limit", &PAGE_SIZE.to_string()),
+            ]))?;
+            let last = page.items.is_empty();
+            items.extend(page.items);
+            if last || items.len() >= page.total_record_count {
+                return Ok(items);
+            }
+        }
+    }
+
     pub fn children_page(
         &self,
         parent: &Item,
@@ -576,13 +607,7 @@ impl Server {
 
     pub fn children(&self, item: &Item, season: Option<&str>, offset: usize) -> Result<Page> {
         let mut request = match item.kind.as_str() {
-            "Series" => {
-                let mut req = self.get(&["Shows", &item.id, "Episodes"]);
-                if let Some(id) = season {
-                    req = req.query(&[("seasonId", id)]);
-                }
-                req
-            }
+            "Series" => self.episode_request(&item.id, season),
             "Person" => self.get(&["Items"]).query(&[
                 ("personIds", item.id.as_str()),
                 ("recursive", "true"),

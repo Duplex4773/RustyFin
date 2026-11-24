@@ -12,6 +12,7 @@ pub(super) const SHORTCUTS: &[(&str, &str, &str)] = &[
     ("zoom-in", "Zoom in", "]"),
     ("zoom-out", "Zoom out", "["),
     ("options", "Playback options", "o"),
+    ("episodes", "Browse episodes", "e"),
     ("preview", "Preview seek position", "t"),
 ];
 

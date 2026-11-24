@@ -195,6 +195,7 @@ pub struct Source {
     pub path: Option<String>,
     pub size: Option<u64>,
     pub bitrate: Option<u64>,
+    pub run_time_ticks: Option<u64>,
     pub supports_direct_play: bool,
     #[serde(skip_serializing)]
     pub open_token: Option<String>,
@@ -220,8 +221,11 @@ pub struct Stream {
     pub average_frame_rate: Option<f64>,
     pub real_frame_rate: Option<f64>,
     pub is_external: bool,
-    is_default: bool,
+    pub is_default: bool,
+    pub is_forced: bool,
+    pub is_hearing_impaired: bool,
     pub is_text_subtitle_stream: Option<bool>,
+    pub supports_external_stream: Option<bool>,
     #[serde(rename = "Type")]
     pub kind: String,
     pub index: Option<i32>,
@@ -229,8 +233,23 @@ pub struct Stream {
     codec_tag: Option<String>,
     pub video_range_type: Option<String>,
     pub video_range: Option<String>,
-    pub is_interlaced: bool,
+    pub is_interlaced: Option<bool>,
+    pub is_anamorphic: Option<bool>,
     pub is_attached_pic: bool,
+    pub profile: Option<String>,
+    pub level: Option<f64>,
+    #[serde(rename = "BitRate", alias = "Bitrate")]
+    pub bitrate: Option<u64>,
+    pub bit_depth: Option<u32>,
+    pub pixel_format: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub color_space: Option<String>,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+    pub channel_layout: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub audio_spatial_format: Option<String>,
+    pub time_base: Option<String>,
     pub dv_profile: Option<u8>,
     dv_version_major: Option<u8>,
     rpu_present_flag: Option<i32>,
@@ -336,7 +355,7 @@ fn route(streams: &[Stream]) -> Result<Route> {
 pub struct PlayRequest {
     pub route: Route,
     pub url: Url,
-    pub source: String,
+    pub source: Source,
     pub session: String,
     pub item: String,
     pub resume: f64,
@@ -593,20 +612,20 @@ impl Server {
         Ok(PlayRequest {
             url,
             route,
-            source: source.id.clone(),
+            frame_rate: source.frame_rate(),
+            seekable: !source.is_infinite_stream && item.kind != "TvChannel",
             session: info.play_session_id,
             item: item.id.clone(),
             allow_passthrough: true,
             start_paused: false,
             audio_only: music,
-            frame_rate: source.frame_rate(),
-            seekable: !source.is_infinite_stream && item.kind != "TvChannel",
             _live: lease,
             format,
             audio_index: audio.and_then(|s| s.index),
             subtitle_size: 36,
             subtitle_index: subtitle.and_then(|s| s.index),
             subtitle_track: subtitle.cloned(),
+            source,
             external_subtitle,
             resume: item
                 .user_data
@@ -837,7 +856,7 @@ mod tests {
         api.join().unwrap();
         if alternate {
             assert_eq!(request.route, Route::Mpv);
-            assert_eq!(request.source, "other");
+            assert_eq!(request.source.id, "other");
             assert_eq!(request.audio_index, Some(3));
             assert_eq!(request.subtitle_index, Some(4));
             assert_eq!(request.url.path(), "/jellyfin/Videos/episode/stream.mp4");

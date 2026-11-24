@@ -3,14 +3,16 @@ use crate::{
     jellyfin::Source, player::ShaderStatus, preferences::Shader, ui::playback::PlayerMenu,
 };
 use PlayerMenu::*;
+mod episodes;
+mod file_info;
 
 const ROW: f32 = 38.;
 const HEADER: f32 = 48.;
 const SECONDARY: u32 = 0xc8cdce;
 const SHADER_READOUT: f32 = 62.;
 
-fn shader_readout(status: ShaderStatus) -> Div {
-    let (state, detail, color) = match status {
+pub(super) fn shader_status_details(status: ShaderStatus) -> (&'static str, String, u32) {
+    match status {
         ShaderStatus::Off => ("Off", "Standard mpv scaling".into(), TEXT),
         ShaderStatus::Checking => (
             "Checking",
@@ -71,7 +73,11 @@ fn shader_readout(status: ShaderStatus) -> Div {
             "Choose another shader or select Off.".into(),
             0xffd9b3,
         ),
-    };
+    }
+}
+
+fn shader_readout(status: ShaderStatus) -> Div {
+    let (state, detail, color) = shader_status_details(status);
     div()
         .h(px(SHADER_READOUT))
         .w_full()
@@ -100,6 +106,8 @@ impl PlayerMenu {
             Audio => "Audio Tracks",
             Subtitles => "Subtitles",
             Chapters => "Chapters",
+            Episodes => "Episodes",
+            EpisodeSeasons => "Choose season",
             Queue => "Up Next",
             Info => "File Info",
         }
@@ -116,6 +124,7 @@ impl PlayerMenu {
             SubtitleSync | Subtitles => "\u{e7f0}",
             Audio => "\u{e8d6}",
             Chapters => "\u{e8fd}",
+            Episodes | EpisodeSeasons => "\u{e8fd}",
             Queue => "\u{e8ef}",
             Info => "\u{e946}",
         }
@@ -278,6 +287,24 @@ impl Library {
                     .into_any_element(),
             );
         }
+        rows.push(
+            action(
+                "performance-overlay",
+                "Performance overlay",
+                Some("\u{e9d9}"),
+            )
+            .child(switch(p.performance.enabled))
+            .on_click(cx.listener(|s, _, _, cx| {
+                if let Some(player) = &mut s.player {
+                    let enabled = !player.performance.enabled;
+                    player.performance.set_enabled(enabled);
+                    s.prefs.performance_overlay = enabled;
+                    s.save_preferences(cx);
+                    cx.notify();
+                }
+            }))
+            .into_any_element(),
+        );
         if let Some(source) = self.current_source() {
             let quality = source
                 .bitrate
@@ -467,6 +494,8 @@ impl Library {
             Settings => self.settings_rows(p, cx),
             Shaders => self.shader_rows(p, cx),
             Audio | Subtitles => self.track_rows(page, p, cx),
+            Episodes => self.episode_drawer_rows(p, cx),
+            EpisodeSeasons => self.episode_season_rows(cx),
             Speed if p.native_bitstream() => vec![
                 readout("Normal", "1× · Digital bitstream").into_any_element(),
                 label(
@@ -642,8 +671,8 @@ impl Library {
                 let mut rows = Vec::new();
                 let jump = |row: Stateful<Div>, at: f64, cx: &mut Context<Self>| {
                     row.on_click(cx.listener(move |s, _, w, cx| {
-                        if let Some(p) = &s.player {
-                            s.control(Some(at - p.status.position), cx);
+                        if s.player.is_some() {
+                            s.seek_to(at, cx);
                             s.toggle_player_menu(Chapters, w, cx);
                         }
                     }))
@@ -723,31 +752,7 @@ impl Library {
                 }
                 rows
             }
-            Info => {
-                let mut rows = Vec::new();
-                if let Some(i) = &self.playing {
-                    let name = i
-                        .series_name
-                        .as_ref()
-                        .map_or_else(|| i.name.clone(), |series| format!("{series} · {}", i.name));
-                    rows.push(readout("Title", name).into_any_element());
-                }
-                rows.push(readout("Player", p.label.clone()).into_any_element());
-                if let Some(s) = self.current_source() {
-                    if let Some(ext) = &s.container {
-                        rows.push(readout("Container", ext.to_uppercase()).into_any_element());
-                    }
-                    for track in s
-                        .media_streams
-                        .iter()
-                        .flatten()
-                        .filter(|t| t.kind == "Video" || t.kind == "Audio")
-                    {
-                        rows.push(readout(&track.kind, track.label()).into_any_element());
-                    }
-                }
-                rows
-            }
+            Info => self.file_info_rows(p, cx),
         }
     }
 
@@ -827,9 +832,13 @@ impl Library {
             let weak = cx.weak_entity();
             w.on_next_frame(move |w, cx| {
                 let _ = weak.update(cx, |s, cx| {
-                    if s.player.as_ref().is_some_and(|p| p.panel_open) && s.controls.menu == page {
+                    if let Some(p) = s.player.as_ref().filter(|p| p.panel_open)
+                        && s.controls.menu == page
+                    {
                         let focus = &s.menu_focus;
-                        if focus.selected.get() {
+                        if page == Info {
+                            focus.close.focus(w);
+                        } else if focus.selected.get() {
                             focus.current.focus(w);
                         } else {
                             focus.close.focus(w);
@@ -838,7 +847,10 @@ impl Library {
                                 focus.close.focus(w);
                             }
                         }
-                        focus.reveal(w, cx, !s.controls.warning.is_empty());
+                        focus.reveal(w, cx, !s.controls.warning.is_empty(), page == Episodes);
+                        if !p.keyboard_controls() {
+                            focus.scope.focus(w);
+                        }
                         cx.notify();
                     }
                 });
@@ -851,12 +863,16 @@ impl Library {
         } else {
             0.
         };
-        let height = (HEADER
-            + status_height
-            + 12.
-            + ROW * rows.len() as f32
-            + if warning { 48. } else { 0. })
-        .min(492.);
+        let height = if page.episode_drawer() || page == Info {
+            810.
+        } else {
+            (HEADER
+                + status_height
+                + 12.
+                + ROW * rows.len() as f32
+                + if warning { 48. } else { 0. })
+            .min(492.)
+        };
         let header = div()
             .h(px(HEADER))
             .w_full()
@@ -867,20 +883,39 @@ impl Library {
             .gap_2()
             .border_b_1()
             .border_color(rgba(0xffffff28))
-            .when(page == Settings, |d| {
+            .when(matches!(page, Settings | Episodes), |d| {
                 d.child(icon(page.glyph(), 19.).ml_1())
             })
-            .when(page != Settings, |d| {
+            .when(!matches!(page, Settings | Episodes), |d| {
                 d.child(
                     glyph_button("Back", BACK)
                         .on_click(cx.listener(|s, _, w, cx| s.back_player_menu(w, cx))),
                 )
             })
-            .child(title(page.title(), 18.).flex_1())
             .child(
-                glyph_button("Close playback settings", "\u{e711}")
-                    .track_focus(&self.menu_focus.close)
-                    .on_click(cx.listener(move |s, _, w, cx| s.toggle_player_menu(page, w, cx))),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(title(page.title(), 18.))
+                    .when_some(
+                        self.playing
+                            .as_ref()
+                            .and_then(|i| i.series_name.as_ref())
+                            .filter(|_| page.episode_drawer()),
+                        |d, name| d.child(label(name.clone(), 12., SECONDARY).truncate()),
+                    ),
+            )
+            .child(
+                glyph_button(
+                    if page.episode_drawer() {
+                        "Close episodes"
+                    } else {
+                        "Close playback settings"
+                    },
+                    "\u{e711}",
+                )
+                .track_focus(&self.menu_focus.close)
+                .on_click(cx.listener(move |s, _, w, cx| s.toggle_player_menu(page, w, cx))),
             );
         let body =
             div()
@@ -916,10 +951,17 @@ impl Library {
                 .flex_col()
                 .overflow_hidden()
                 .rounded(px(16.))
-                .bg(rgba(0x101419bf))
+                .bg(rgba(if page.episode_drawer() {
+                    0x101419e8
+                } else {
+                    0x101419bf
+                }))
                 .border_1()
                 .border_color(rgba(0xffffff45))
                 .child(header)
+                .when(page == Episodes, |d| {
+                    d.children(self.episode_season_selector(cx))
+                })
                 .when_some(shader_status, |d, status| d.child(shader_readout(status)))
                 .child(body),
             height + 2.,

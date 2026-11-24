@@ -1,5 +1,7 @@
 use super::*;
-use crate::ui::playback::PlayerMenu;
+use crate::ui::playback::{EpisodeDirection, PlayerMenu};
+mod episode_transport;
+mod performance_overlay;
 
 pub(super) const PANEL: u32 = 0x15161b;
 const EDGE: f32 = 14.;
@@ -112,7 +114,10 @@ impl Library {
         cx: &mut Context<Self>,
     ) {
         let Some(p) = &mut self.player else { return };
-        if p.panel_open && self.controls.menu == page {
+        if p.panel_open
+            && (self.controls.menu == page
+                || page == PlayerMenu::Episodes && self.controls.menu.episode_drawer())
+        {
             self.close_player_menu(w, cx);
         } else {
             p.panel_open = true;
@@ -120,27 +125,46 @@ impl Library {
             self.end_preview();
             self.menu_focus.origin = page;
             self.menu_focus.settings_row = PlayerMenu::Speed;
+            if self.controls.menu.episode_drawer() {
+                self.controls.episodes = Default::default();
+            }
             self.enter_player_menu(page, cx);
+            if page == PlayerMenu::Episodes {
+                self.load_episode_drawer(w, cx);
+            }
         }
     }
 
     pub(in crate::ui) fn enter_player_menu(&mut self, page: PlayerMenu, cx: &mut Context<Self>) {
+        if self.controls.menu != page {
+            self.menu_focus.scroll.set_offset(Point::default());
+        }
         self.controls.menu = page;
         self.menu_focus.entering.set(true);
         cx.notify();
     }
 
     fn close_player_menu(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if let Some(p) = &mut self.player {
+        let keyboard = self.player.as_mut().is_some_and(|p| {
             p.panel_open = false;
+            p.keyboard_controls()
+        });
+        if self.controls.menu.episode_drawer() {
+            self.controls.episodes = Default::default();
         }
         self.menu_focus.entering.set(false);
-        self.menu_focus.launcher(self.menu_focus.origin).focus(w);
+        if keyboard {
+            self.menu_focus.launcher(self.menu_focus.origin).focus(w);
+        } else {
+            self.focus.focus(w);
+        }
         cx.notify();
     }
 
     pub(in crate::ui) fn back_player_menu(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if self.controls.menu == PlayerMenu::Settings
+        if self.controls.menu == PlayerMenu::EpisodeSeasons {
+            self.enter_player_menu(PlayerMenu::Episodes, cx);
+        } else if self.controls.menu == PlayerMenu::Settings
             || self.controls.menu == self.menu_focus.origin
         {
             self.close_player_menu(w, cx);
@@ -169,7 +193,7 @@ impl Library {
                 .focus(w);
         }
         self.menu_focus
-            .reveal(w, cx, !self.controls.warning.is_empty());
+            .reveal(w, cx, !self.controls.warning.is_empty(), false);
         cx.notify();
     }
 
@@ -191,6 +215,7 @@ impl Library {
         self.controls.remote_scrub = false;
         self.scrub = None;
         self.controls.hover = None;
+        self.controls.episode_hover = None;
     }
 
     fn finish_scrub(&mut self, event: &MouseUpEvent, w: &mut Window, cx: &mut Context<Self>) {
@@ -199,7 +224,7 @@ impl Library {
             && let Some(p) = &self.player
         {
             let at = f64::from(fraction_at(event.position.x, w)) * p.status.duration;
-            self.control(Some(at - p.status.position), cx);
+            self.seek_to(at, cx);
         }
     }
 
@@ -223,6 +248,10 @@ impl Library {
         };
         let preview = self.seek_preview_fraction(p, w);
         let thickness = if preview.is_some() { 5. } else { 3. };
+        let chapters = self
+            .playing
+            .iter()
+            .flat_map(|item| item.chapters.iter().flatten());
         let mut remaining = overlay_text(
             format!("−{}", clock(duration - time)),
             14.,
@@ -264,22 +293,38 @@ impl Library {
                     }])
                     .child(
                         div()
-                            .relative()
                             .h_full()
                             .w(relative(progress))
                             .rounded_full()
-                            .bg(rgb(LIME))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .right(px(-4.5))
-                                    .top(px((thickness - 9.) / 2.))
-                                    .size(px(9.))
-                                    .rounded_full()
-                                    .bg(rgb(0xffffff))
-                                    .border_1()
-                                    .border_color(rgba(0x0a0e122e)),
-                            ),
+                            .bg(rgb(LIME)),
+                    )
+                    .children(chapters.filter_map(|chapter| {
+                        let at = chapter.start_position_ticks as f64 / 10_000_000.;
+                        (at > 0. && at < duration).then(|| {
+                            div()
+                                .absolute()
+                                .left(relative((at / duration) as f32))
+                                .ml(px(-2.))
+                                .top(px((thickness - 11.) / 2.))
+                                .w(px(4.))
+                                .h(px(11.))
+                                .rounded_full()
+                                .bg(rgba(0xffffffe0))
+                                .border_1()
+                                .border_color(rgba(0x0a0e12cf))
+                        })
+                    }))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(relative(progress))
+                            .ml(px(-4.5))
+                            .top(px((thickness - 9.) / 2.))
+                            .size(px(9.))
+                            .rounded_full()
+                            .bg(rgb(0xffffff))
+                            .border_1()
+                            .border_color(rgba(0x0a0e122e)),
                     )
                     .when_some(preview, |d, fraction| {
                         d.child(
@@ -506,10 +551,12 @@ impl Library {
     }
 
     fn exit_player(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        transport_button("Back to title", BACK).on_click(cx.listener(|s, _, _, cx| {
-            s.stop();
-            cx.notify();
-        }))
+        transport_button("Back to title", BACK)
+            .occlude()
+            .on_click(cx.listener(|s, _, _, cx| {
+                s.stop();
+                cx.notify();
+            }))
     }
 
     fn playback_title(&self, p: &Player, width: f32, cx: &mut Context<Self>) -> Div {
@@ -565,6 +612,10 @@ impl Library {
         if p.audio_only {
             playback = playback.child(self.exit_player(cx));
         }
+        let episodes = !p.audio_only && self.has_episode_drawer();
+        if episodes {
+            playback = playback.child(self.episode_button(EpisodeDirection::Previous, cx));
+        }
         if p.seekable {
             playback = playback.child(self.skip_button(false, cx));
         }
@@ -578,6 +629,9 @@ impl Library {
         );
         if p.seekable {
             playback = playback.child(self.skip_button(true, cx));
+        }
+        if episodes {
+            playback = playback.child(self.episode_button(EpisodeDirection::Next, cx));
         }
         if p.audio_only && self.next_title().is_some() {
             playback = playback.child(
@@ -611,6 +665,15 @@ impl Library {
                 ));
             }
         }
+        if !p.audio_only && self.has_episode_drawer() {
+            utility = utility.child(
+                self.menu_button("Episodes", "\u{e8fd}", PlayerMenu::Episodes, cx)
+                    .w_auto()
+                    .px_2()
+                    .gap_1()
+                    .child(label("Episodes", 13., TEXT)),
+            );
+        }
         utility = utility
             .child(self.menu_button("Playback settings", "\u{e9e9}", PlayerMenu::Settings, cx))
             .child(
@@ -636,11 +699,10 @@ impl Library {
             .gap(px(8.))
             .child(playback)
             .child(div().flex_1());
-        if let Some(g) = self
-            .controls
-            .segments
-            .iter()
-            .find(|g| g.active(p.status.position))
+        if p.seekable
+            && let Some(g) = self.controls.segments.iter().find(|g| {
+                !matches!(g.kind.as_str(), "Intro" | "Outro") && g.active(p.status.position)
+            })
         {
             let end = g.end_ticks as f64 / 10_000_000.;
             row = row.child(
@@ -669,6 +731,42 @@ impl Library {
             .child(row.child(utility))
     }
 
+    fn segment_skip_button(&self, p: &Player, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        if !p.status.ready || !p.seekable || p.audio_only || p.panel_open || self.scrub.is_some() {
+            return None;
+        }
+        let segment = self.controls.segments.iter().find(|g| {
+            (g.kind == "Intro" || g.kind == "Outro" && !self.controls.watching_credits)
+                && g.active(p.status.position)
+        })?;
+        let end = (segment.end_ticks as f64 / 10_000_000.).min(p.status.duration);
+        let start = segment.start_ticks;
+        if end <= p.status.position {
+            return None;
+        }
+        let label = if segment.kind == "Intro" {
+            "Skip intro"
+        } else {
+            "Skip credits"
+        };
+        Some(
+            pill("skip-intro-or-credits", label, Some(NEXT), false)
+                .occlude()
+                .bg(rgba(0x171c22af))
+                .border_1()
+                .border_color(rgba(0xffffff60))
+                .hover(|d| d.bg(rgba(0x262b33dc)))
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if let Some(player) = &s.player
+                        && end > player.status.position
+                    {
+                        s.controls.skipped = Some(start);
+                        s.seek_to(end, cx);
+                    }
+                })),
+        )
+    }
+
     pub(super) fn playback_screen(
         &self,
         root: Div,
@@ -683,11 +781,49 @@ impl Library {
         let show_bar = chrome_opacity > 0.;
         let duration = p.status.duration;
         let time = p.status.position;
-        let mut root = root.relative();
+        let view = cx.weak_entity();
+        let performance_paints = p.performance.enabled.then(|| p.performance.paints.clone());
+        let mut root = root.relative().child(
+            canvas(
+                |_, _, _| (),
+                move |_, _, w, _| {
+                    if let Some(paints) = &performance_paints {
+                        paints.set(paints.get().saturating_add(1));
+                    }
+                    w.on_mouse_event(move |event: &MouseDownEvent, phase, w, cx| {
+                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                            let _ = view.update(cx, |s, cx| {
+                                if let Some(player) = &mut s.player {
+                                    player.use_pointer_controls();
+                                    if player.panel_open {
+                                        s.menu_focus.scope.focus(w);
+                                    } else {
+                                        s.focus.focus(w);
+                                    }
+                                    // Let the control click run without assigning mouse focus.
+                                    w.prevent_default();
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size(px(0.)),
+        );
         if p.audio_only {
             root = root.bg(rgb(BG)).child(self.now_playing(p, cx));
         } else {
-            root = root.child(div().flex_1());
+            root = root.child(div().flex_1()).child(
+                div().id("video-surface").absolute().inset_0().on_click(
+                    |event: &ClickEvent, w, _| {
+                        if event.click_count() == 2 {
+                            w.toggle_fullscreen();
+                        }
+                    },
+                ),
+            );
             if show_bar {
                 root = root.child(self.playback_title(p, width, cx).opacity(chrome_opacity));
             }
@@ -740,8 +876,26 @@ impl Library {
                     .child(label(message, 14., TEXT)),
             );
         }
+        if p.performance.enabled {
+            root = root.child(self.performance_overlay(p, width));
+        }
+        let credits = self.credits_prompt();
+        let mut skip = self.segment_skip_button(p, cx);
+        if credits.is_none()
+            && self.seek_preview_fraction(p, w).is_none()
+            && let Some(skip) = skip.take()
+        {
+            let bottom = CONTROLS_HEIGHT + p.caption_height + EDGE;
+            root = root.child(
+                div()
+                    .absolute()
+                    .right(px(rail(width).0))
+                    .bottom(px(bottom))
+                    .child(skip),
+            );
+        }
         if p.panel_open {
-            root = root.child(div().absolute().inset_0().on_mouse_down(
+            root = root.child(div().absolute().inset_0().occlude().on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|s, _, w, cx| {
                     s.close_player_menu(w, cx);
@@ -750,12 +904,21 @@ impl Library {
         }
         if show_bar {
             root = root.child(self.transport(p, w, cx).opacity(chrome_opacity));
+            if !p.panel_open
+                && let Some(preview) = self.episode_preview(width)
+            {
+                root = root.child(preview.opacity(chrome_opacity));
+            }
         }
         if p.panel_open {
             let edge = rail(width).0;
-            let panel_width = (width * 0.35)
-                .clamp(380., 460.)
-                .min((width - 2. * edge).max(1.));
+            let episodes = self.controls.menu.episode_drawer();
+            let panel_width = match self.controls.menu {
+                PlayerMenu::Info => (width * 0.56).clamp(510., 690.),
+                _ if episodes => (width * 0.48).clamp(380., 496.),
+                _ => (width * 0.35).clamp(380., 460.),
+            }
+            .min((width - 2. * edge).max(1.));
             let (menu, preferred_height) = self.playback_menu(p, w, cx);
             let panel_height = preferred_height.min((height - CONTROLS_HEIGHT - 24.).max(1.));
             let bounds = Bounds::new(
@@ -766,10 +929,10 @@ impl Library {
                 size(px(panel_width), px(panel_height)),
             );
             root = root.child(floating(bounds).occlude().child(menu));
-        } else if let Some(next) = self.credits_prompt() {
+        } else if let Some(next) = credits {
             let card_width = (width - 2. * EDGE).clamp(1., 390.);
             let card_height = 140.;
-            let bottom = if show_bar { CONTROLS_HEIGHT } else { 0. } + p.caption_height + EDGE;
+            let bottom = CONTROLS_HEIGHT + p.caption_height + EDGE;
             let bounds = Bounds::new(
                 point(
                     px(width - EDGE - card_width),
@@ -838,6 +1001,7 @@ impl Library {
                                 .track_focus(&self.menu_focus.next)
                                 .on_click(cx.listener(|s, _, w, cx| s.play_from_credits(w, cx))),
                         )
+                        .children(skip)
                         .child(
                             pill("watch-credits", "Watch credits", None, false)
                                 .track_focus(&self.menu_focus.credits)
@@ -846,14 +1010,28 @@ impl Library {
                 );
             root = root.child(card);
         } else if show_bar && let Some(f) = self.seek_preview_fraction(p, w) {
+            let chapter = self.preview_chapter(w);
             let art = self.artwork.trickplay.preview().or_else(|| {
-                self.preview_chapter(w).and_then(|(i, _, _)| {
+                chapter.and_then(|(i, _, _)| {
                     self.artwork
                         .get(self.playing.as_ref()?.art(ArtKind::Chapter(i)))
                 })
             });
+            let timestamp = clock(f64::from(f) * p.status.duration);
+            let caption = chapter.map_or(timestamp.clone(), |(i, chapter, _)| {
+                let name = chapter
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Chapter {}", i + 1));
+                format!("{timestamp} · {name}")
+            });
             let has_image = art.is_some();
-            let (sw, sh) = art.as_ref().map_or((65., 30.), |image| {
+            let preview_width = if chapter.is_some() {
+                PREVIEW_WIDTH
+            } else {
+                65.
+            };
+            let (sw, sh) = art.as_ref().map_or((preview_width, 30.), |image| {
                 let pixels = image.size(0);
                 let aspect = pixels.width.0.max(1) as f32 / pixels.height.0.max(1) as f32;
                 let width = PREVIEW_WIDTH.min(PREVIEW_HEIGHT * aspect);
@@ -893,7 +1071,9 @@ impl Library {
                             .border_color(rgba(0xffffff85)),
                     )
                     .child(
-                        label(clock(f64::from(f) * p.status.duration), 12., TEXT)
+                        label(caption, 12., TEXT)
+                            .max_w(px((sw - 6.).max(1.)))
+                            .truncate()
                             .px_1()
                             .rounded_sm()
                             .bg(rgba(0x08090bdd))

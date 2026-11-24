@@ -31,6 +31,20 @@ fn mode(device: &[u16], index: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEVMODEW> {
             .then_some(value)
     }
 }
+
+fn monitor_device(monitor: HMONITOR) -> Option<[u16; 32]> {
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    unsafe { GetMonitorInfoW(monitor, &mut info.monitorInfo) }
+        .as_bool()
+        .then_some(info.szDevice)
+}
+
+pub(super) fn display_frequency(window: HWND) -> Option<u32> {
+    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+    let hz = mode(&monitor_device(monitor)?, ENUM_CURRENT_SETTINGS)?.dmDisplayFrequency;
+    (hz > 1).then_some(hz)
+}
 fn same_format(a: &DEVMODEW, b: &DEVMODEW) -> bool {
     a.dmPelsWidth == b.dmPelsWidth
         && a.dmPelsHeight == b.dmPelsHeight
@@ -105,12 +119,9 @@ impl RefreshMatch {
         }
         self.changed = None;
         self.monitor = Some(current);
-        let mut info = MONITORINFOEXW::default();
-        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
-        if !unsafe { GetMonitorInfoW(current, &mut info.monitorInfo) }.as_bool() {
+        let Some(device) = monitor_device(current) else {
             return;
-        }
-        let device = info.szDevice;
+        };
         let Some(original) = mode(&device, ENUM_CURRENT_SETTINGS) else {
             return;
         };

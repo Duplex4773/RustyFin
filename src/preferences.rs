@@ -150,6 +150,7 @@ pub struct Preferences {
     pub discord_app: Option<String>,
     pub rotate: bool,
     pub match_refresh: bool,
+    pub performance_overlay: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub anime_sync: bool,
     pub subtitle_size: u32,
@@ -168,6 +169,7 @@ impl Default for Preferences {
             autoplay: true,
             rotate: true,
             match_refresh: false,
+            performance_overlay: false,
             anime_sync: false,
             subtitle_size: 36,
             passthrough: true,

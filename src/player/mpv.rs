@@ -14,7 +14,10 @@ use windows::Win32::Foundation::HWND;
 use super::Status;
 use crate::preferences::{Channels, MpvSettings, Shader, SubtitleStyle};
 
+mod metrics;
 mod rtx;
+pub use metrics::Metric;
+use metrics::Metrics;
 use rtx::RtxVsr;
 
 type Handle = *mut c_void;
@@ -33,6 +36,20 @@ struct Event {
     reply: u64,
     data: *mut c_void,
 }
+impl Event {
+    fn property_string(&self) -> Option<&CStr> {
+        if self.error < 0 || self.data.is_null() {
+            return None;
+        }
+        let property = unsafe { &*self.data.cast::<EventProperty>() };
+        if property.format != FORMAT_STRING || property.data.is_null() {
+            return None;
+        }
+        // mpv owns the string until the next mpv_wait_event call.
+        let string = unsafe { *property.data.cast::<*const c_char>() };
+        (!string.is_null()).then(|| unsafe { CStr::from_ptr(string) })
+    }
+}
 #[repr(C)]
 struct EndFile {
     reason: c_int,
@@ -43,6 +60,7 @@ struct EndFile {
 union NodeValue {
     string: *const c_char,
     list: *mut NodeList,
+    integer: i64,
 }
 
 #[repr(C)]
@@ -74,8 +92,10 @@ struct EventProperty {
 }
 
 const FORMAT_STRING: c_int = 1;
+const FORMAT_INT64: c_int = 4;
 const FORMAT_NODE: c_int = 6;
 const FORMAT_NODE_ARRAY: c_int = 7;
+const FORMAT_NODE_MAP: c_int = 8;
 const SHADER_PROBE_REPLY: u64 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -199,6 +219,7 @@ pub struct Mpv {
     shader_selected_at: Instant,
     shader_probe_at: Instant,
     shader_probe_pending: bool,
+    metrics: Metrics,
     rtx: RtxVsr,
     selection: Option<(Option<i32>, Option<i32>, Option<url::Url>)>,
     _library: Library,
@@ -263,6 +284,7 @@ impl Mpv {
                 shader_selected_at: Instant::now(),
                 shader_probe_at: Instant::now(),
                 shader_probe_pending: false,
+                metrics: Metrics::default(),
                 rtx: RtxVsr::default(),
                 selection: Some((
                     request.audio_index,
@@ -496,21 +518,9 @@ impl Mpv {
         {
             return;
         }
-        let passes = if event.error >= 0 && !event.data.is_null() {
-            let property = unsafe { &*event.data.cast::<EventProperty>() };
-            if property.format == FORMAT_STRING && !property.data.is_null() {
-                // mpv owns the string until the next mpv_wait_event call.
-                let string = unsafe { *property.data.cast::<*const c_char>() };
-                NonNull::new(string.cast_mut()).and_then(|string| {
-                    let bytes = unsafe { CStr::from_ptr(string.as_ptr()) }.to_bytes();
-                    serde_json::from_slice::<RenderPasses<'_>>(bytes).ok()
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let passes = event
+            .property_string()
+            .and_then(|string| serde_json::from_slice::<RenderPasses<'_>>(string.to_bytes()).ok());
         if let Some(status) = passes
             .as_ref()
             .and_then(|passes| passes.shader_status(&self.shader, &self.shader_pass_names))
@@ -613,6 +623,7 @@ impl Mpv {
                         }
                     }
                     3 if e.reply == SHADER_PROBE_REPLY => self.shader_probe_reply(e),
+                    3 => self.performance_reply(e),
                     7 if !e.data.is_null() => {
                         let end = &*e.data.cast::<EndFile>();
                         if end.reason == 4 {
@@ -753,6 +764,10 @@ impl Mpv {
     }
     pub fn seek(&self, seconds: f64) -> Result<()> {
         self.run(&["seek", &seconds.to_string(), "relative"])
+    }
+
+    pub fn seek_to(&self, seconds: f64) -> Result<()> {
+        self.run(&["seek", &seconds.to_string(), "absolute+exact"])
     }
 }
 

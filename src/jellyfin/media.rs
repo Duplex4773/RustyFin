@@ -32,6 +32,12 @@ impl Segment {
     }
 }
 impl Stream {
+    pub fn frame_rate(&self) -> Option<f64> {
+        self.average_frame_rate
+            .filter(|f| (1.0..=240.0).contains(f))
+            .or_else(|| self.real_frame_rate.filter(|f| (1.0..=240.0).contains(f)))
+    }
+
     pub fn bitmap_subtitle(&self) -> bool {
         self.kind == "Subtitle"
             && (self.is_text_subtitle_stream == Some(false)
@@ -96,11 +102,7 @@ impl Source {
             .as_ref()?
             .iter()
             .filter(|s| s.kind == "Video")
-            .find_map(|s| {
-                s.average_frame_rate
-                    .filter(|f| (1.0..=240.0).contains(f))
-                    .or_else(|| s.real_frame_rate.filter(|f| (1.0..=240.0).contains(f)))
-            })
+            .find_map(Stream::frame_rate)
     }
     pub fn selected_audio(&self, desired: Option<i32>) -> Result<Option<&Stream>> {
         let mut tracks = self
@@ -293,6 +295,27 @@ impl Server {
             .windows(2)
             .find(|w| w[0].id == item.id)
             .map(|w| w[1].clone()))
+    }
+
+    pub fn episode_neighbors(&self, item: &Item) -> Result<(Option<Item>, Option<Item>)> {
+        let Some(series) = &item.series_id else {
+            return Ok((None, None));
+        };
+        let page: Page = read(self.get(&["Shows", series, "Episodes"]).query(&[
+            ("userId", self.user_id()?),
+            ("adjacentTo", &item.id),
+            ("isMissing", "false"),
+            ("fields", "Overview,Genres"),
+        ]))?;
+        let Some(at) = page.items.iter().position(|episode| episode.id == item.id) else {
+            return Ok((None, self.next_episode(item)?));
+        };
+        Ok((
+            at.checked_sub(1)
+                .and_then(|index| page.items.get(index))
+                .cloned(),
+            page.items.get(at + 1).cloned(),
+        ))
     }
     pub fn lyrics(&self, id: &str) -> Result<Vec<Lyric>> {
         #[derive(Deserialize)]
