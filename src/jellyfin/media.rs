@@ -213,10 +213,12 @@ impl Server {
         crate::preferences::account_path(self.base.as_str(), &a.user)
     }
     pub fn item(&self, id: &str) -> Result<Item> {
-        read(
+        let mut item = read(
             self.get(&["Items", id])
                 .query(&[("userId", self.user_id()?)]),
-        )
+        )?;
+        self.identify_items(std::slice::from_mut(&mut item));
+        Ok(item)
     }
     pub fn segments(&self, id: &str) -> Result<Vec<Segment>> {
         #[derive(Deserialize)]
@@ -298,13 +300,14 @@ impl Server {
         let Some(series) = &item.series_id else {
             return Ok(None);
         };
-        let p: Page = read(self.get(&["Shows", series, "Episodes"]).query(&[
+        let mut p: Page = read(self.get(&["Shows", series, "Episodes"]).query(&[
             ("userId", self.user_id()?),
             ("startItemId", &item.id),
             ("isMissing", "false"),
             ("limit", "2"),
             ("fields", "Overview,Genres"),
         ]))?;
+        self.identify_items(&mut p.items);
         Ok(p.items
             .windows(2)
             .find(|w| w[0].id == item.id)
@@ -315,12 +318,13 @@ impl Server {
         let Some(series) = &item.series_id else {
             return Ok((None, None));
         };
-        let page: Page = read(self.get(&["Shows", series, "Episodes"]).query(&[
+        let mut page: Page = read(self.get(&["Shows", series, "Episodes"]).query(&[
             ("userId", self.user_id()?),
             ("adjacentTo", &item.id),
             ("isMissing", "false"),
             ("fields", "Overview,Genres"),
         ]))?;
+        self.identify_items(&mut page.items);
         let Some(at) = page.items.iter().position(|episode| episode.id == item.id) else {
             return Ok((None, self.next_episode(item)?));
         };
@@ -339,20 +343,45 @@ impl Server {
         }
         Ok(read::<Lyrics>(self.get(&["Audio", id, "Lyrics"]))?.lyrics)
     }
-    pub fn extras(&self, item: &Item) -> Result<Vec<Item>> {
-        let mut all = Vec::new();
-        for (count, endpoint) in [
-            (item.local_trailer_count, "LocalTrailers"),
-            (item.special_feature_count, "SpecialFeatures"),
-        ] {
-            if count.unwrap_or(0) > 0 {
-                all.extend(read::<Vec<Item>>(
-                    self.get(&["Items", &item.id, endpoint])
-                        .query(&[("userId", self.user_id()?)]),
-                )?);
-            }
+    pub fn extras(&self, item: &Item, kind: ExtraKind) -> Result<Vec<Item>> {
+        let mut items = read::<Vec<Item>>(
+            self.get(&["Items", &item.id, kind.endpoint()])
+                .query(&[("userId", self.user_id()?)]),
+        )?;
+        self.identify_items(&mut items);
+        Ok(items)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ExtraKind {
+    Trailers,
+    SpecialFeatures,
+}
+
+impl ExtraKind {
+    pub const ALL: [Self; 2] = [Self::Trailers, Self::SpecialFeatures];
+
+    pub fn count(self, item: &Item) -> u32 {
+        match self {
+            Self::Trailers => item.local_trailer_count,
+            Self::SpecialFeatures => item.special_feature_count,
         }
-        Ok(all)
+        .unwrap_or_default()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Trailers => "trailers",
+            Self::SpecialFeatures => "special features",
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Trailers => "LocalTrailers",
+            Self::SpecialFeatures => "SpecialFeatures",
+        }
     }
 }
 

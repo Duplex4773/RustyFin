@@ -1,5 +1,41 @@
 use super::*;
 use crate::jellyfin::federation::{HomeFeed, home_shelves};
+use crate::preferences::{DismissedTitle, HomePreferences, ResumeKey};
+
+fn resume_title(item: &Item) -> &str {
+    if item.kind == "Episode" {
+        item.series_id.as_deref().unwrap_or(&item.id)
+    } else {
+        &item.id
+    }
+}
+
+impl DismissedTitle {
+    fn from_item(item: &Item) -> Self {
+        let mut copies = Vec::new();
+        for copy in std::iter::once(item).chain(&item.copies) {
+            if let Some(account) = &copy.origin {
+                let key = ResumeKey {
+                    account: account.clone(),
+                    title: resume_title(copy).to_owned(),
+                };
+                if !copies.contains(&key) {
+                    copies.push(key);
+                }
+            }
+        }
+        Self {
+            name: item.series_name.as_ref().unwrap_or(&item.name).clone(),
+            copies,
+        }
+    }
+
+    fn contains(&self, item: &Item) -> bool {
+        self.copies.iter().any(|key| {
+            item.origin.as_ref() == Some(&key.account) && resume_title(item) == key.title
+        })
+    }
+}
 
 #[derive(Default)]
 enum FeedStatus {
@@ -93,13 +129,17 @@ impl Home {
         true
     }
 
-    fn shelves(&self) -> Vec<Shelf> {
-        home_shelves(
+    fn shelves(&self, prefs: &HomePreferences) -> Vec<Shelf> {
+        let mut shelves = home_shelves(
             self.sources
                 .iter()
                 .map(|s| s.feeds.each_ref().map(|f| f.items.as_slice())),
             self.sources.len() > 1,
-        )
+            |item| !prefs.dismissed.iter().any(|title| title.contains(item)),
+        );
+        let order = prefs.layout.shelf_order();
+        shelves.sort_by_key(|shelf| order.iter().position(|&kind| kind == shelf.kind));
+        shelves
     }
 
     pub(super) fn loading(&self) -> bool {
@@ -166,6 +206,50 @@ impl Home {
 }
 
 impl Library {
+    pub(super) fn save_home(&mut self, cx: &mut Context<Self>) {
+        self.publish_home();
+        self.save_preferences(cx);
+    }
+
+    pub(super) fn dismiss_continue(&mut self, item: &Item, w: &mut Window, cx: &mut Context<Self>) {
+        let dismissal = DismissedTitle::from_item(item);
+        if dismissal.copies.is_empty() || self.prefs.home.dismissed.contains(&dismissal) {
+            return;
+        }
+        self.prefs.home.dismissed.push(dismissal.clone());
+        self.home_undo = Some(dismissal);
+        self.shelf_light.hovered = None;
+        self.save_home(cx);
+        if self.keyboard {
+            let view = cx.weak_entity();
+            w.defer(cx, move |w, cx| {
+                let _ = view.update(cx, |s, _| {
+                    if s.home_undo.is_some() && matches!(s.state.screen, Screen::Discover) {
+                        s.home_undo_focus.focus(w);
+                    }
+                });
+            });
+        }
+    }
+
+    pub(super) fn restore_continue(&mut self, title: &DismissedTitle, cx: &mut Context<Self>) {
+        self.prefs
+            .home
+            .dismissed
+            .retain(|dismissed| dismissed != title);
+        if self.home_undo.as_ref() == Some(title) {
+            self.home_undo = None;
+        }
+        self.save_home(cx);
+    }
+
+    pub(super) fn undo_continue(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if let Some(title) = self.home_undo.take() {
+            self.focus.focus(w);
+            self.restore_continue(&title, cx);
+        }
+    }
+
     pub(super) fn load_home(&mut self, w: &Window, cx: &mut Context<Self>) {
         if !self.home.sources.is_empty() && !self.home_dirty {
             cx.notify();
@@ -214,8 +298,9 @@ impl Library {
     }
 
     fn publish_home(&mut self) {
-        let shelves = self.home.shelves();
+        let mut shelves = self.home.shelves(&self.prefs.home);
         let featured = screens::featured_titles(&shelves);
+        shelves.retain(|shelf| !self.prefs.home.layout.hidden.contains(&shelf.kind));
         let old_hero = self.featured.get(self.hero);
         self.hero = old_hero
             .and_then(|old| {
@@ -283,7 +368,8 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use super::{Home, HomeFeed, Item, Server};
+    use super::{DismissedTitle, Home, HomeFeed, HomePreferences, Item, Server, ShelfKind};
+    use crate::preferences::Preferences;
 
     fn server(name: &str) -> Server {
         Server::restore(crate::jellyfin::Account {
@@ -301,8 +387,96 @@ mod tests {
     }
 
     #[test]
+    fn dismissing_a_series_survives_refresh_and_keeps_resume_progress() {
+        let mut home = Home::default();
+        home.sync(&[server("primary"), server("secondary")]);
+        let primary = home.sources[0].origin.clone();
+        let secondary = home.sources[1].origin.clone();
+        let episode = |id: &str, series: &str, position: u64| {
+            serde_json::from_value(serde_json::json!({
+                "Id": id,
+                "Name": "Episode",
+                "Type": "Episode",
+                "SeriesId": series,
+                "SeriesName": "Test show",
+                "ProviderIds": { "Imdb": "tt1234" },
+                "UserData": { "PlaybackPositionTicks": position }
+            }))
+            .unwrap()
+        };
+        let resume = home.begin(&primary, HomeFeed::Resume).unwrap();
+        home.finish(
+            &primary,
+            HomeFeed::Resume,
+            resume,
+            Ok(vec![episode("first", "series", 200)]),
+        );
+        let resume = home.begin(&secondary, HomeFeed::Resume).unwrap();
+        home.finish(
+            &secondary,
+            HomeFeed::Resume,
+            resume,
+            Ok(vec![episode("copy", "linked-series", 100)]),
+        );
+        let mut prefs = HomePreferences::default();
+        let shelf = home.shelves(&prefs);
+        let dismissal = DismissedTitle::from_item(&shelf[0].items[0]);
+        assert_eq!(dismissal.copies.len(), 2);
+        prefs.dismissed.push(dismissal);
+        assert!(home.shelves(&prefs).is_empty());
+
+        let next = home.begin(&primary, HomeFeed::NextUp).unwrap();
+        home.finish(
+            &primary,
+            HomeFeed::NextUp,
+            next,
+            Ok(vec![episode("next", "series", 0)]),
+        );
+        assert!(home.shelves(&prefs).is_empty());
+        assert_eq!(
+            home.sources[0].feeds[HomeFeed::Resume as usize].items[0].position(),
+            200
+        );
+        assert_eq!(
+            home.shelves(&HomePreferences::default())[0].items[0].position(),
+            200
+        );
+        prefs.dismissed.clear();
+        assert_eq!(home.shelves(&prefs)[0].items[0].position(), 200);
+    }
+
+    #[test]
+    fn older_profiles_get_standard_home_and_new_layout_round_trips() {
+        let mut prefs: Preferences = serde_json::from_str(r#"{"rotate":false}"#).unwrap();
+        assert_eq!(prefs.home.layout.shelf_order(), ShelfKind::ALL);
+        assert!(!prefs.rotate);
+        prefs.home.layout.move_shelf(ShelfKind::RecentMovies, -1);
+        prefs.home.layout.hidden.push(ShelfKind::RecentTv);
+        prefs.home.layout.pin_favourites = true;
+        prefs
+            .home
+            .layout
+            .pinned_libraries
+            .push("library".to_owned());
+        let loaded: Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&prefs).unwrap()).unwrap();
+        assert_eq!(
+            loaded.home.layout.shelf_order(),
+            [
+                ShelfKind::Continue,
+                ShelfKind::RecentMovies,
+                ShelfKind::RecentTv
+            ]
+        );
+        assert_eq!(loaded.home.layout.hidden, [ShelfKind::RecentTv]);
+        assert!(loaded.home.layout.pin_favourites);
+        assert_eq!(loaded.home.layout.pinned_libraries, ["library"]);
+    }
+
+    #[test]
     fn home_keeps_ready_feeds_and_ignores_superseded_responses() {
         let mut home = Home::default();
+        let prefs = HomePreferences::default();
         home.sync(&[server("primary"), server("secondary")]);
         let primary = home.sources[0].origin.clone();
         let secondary = home.sources[1].origin.clone();
@@ -321,9 +495,9 @@ mod tests {
             movies,
             Ok(vec![item("film")]),
         );
-        assert_eq!(home.shelves()[0].items[0].id, "unfinished");
+        assert_eq!(home.shelves(&prefs)[0].items[0].id, "unfinished");
         assert_eq!(
-            home.shelves()[1].items[0].origin.as_deref(),
+            home.shelves(&prefs)[1].items[0].origin.as_deref(),
             Some(primary.as_str())
         );
         assert!(home.loading());
@@ -337,13 +511,13 @@ mod tests {
             Err(anyhow::anyhow!("unavailable")),
         );
         assert!(!home.finish(&primary, HomeFeed::RecentMovies, old, Ok(vec![])));
-        assert_eq!(home.shelves()[1].items[0].id, "film");
+        assert_eq!(home.shelves(&prefs)[1].items[0].id, "film");
         assert_eq!(home.failures().count(), 1);
         assert!(!home.unavailable());
 
         let retry = home.begin(&primary, HomeFeed::RecentMovies).unwrap();
         home.finish(&primary, HomeFeed::RecentMovies, retry, Ok(vec![]));
-        assert_eq!(home.shelves().len(), 1);
+        assert_eq!(home.shelves(&prefs).len(), 1);
         assert_eq!(home.failures().count(), 0);
         home.sync(&[server("primary")]);
         assert!(!home.finish(
@@ -357,6 +531,7 @@ mod tests {
     #[test]
     fn home_distinguishes_an_empty_success_from_all_requests_failing() {
         let mut home = Home::default();
+        let prefs = HomePreferences::default();
         let server = server("primary");
         home.sync(std::slice::from_ref(&server));
         let key = home.sources[0].origin.clone();
@@ -372,7 +547,7 @@ mod tests {
         assert!(home.loading());
         home.finish(&key, HomeFeed::RecentTv, retry, Ok(vec![]));
         assert!(!home.unavailable());
-        assert!(home.shelves().is_empty());
+        assert!(home.shelves(&prefs).is_empty());
 
         let old = home.begin(&key, HomeFeed::Resume).unwrap();
         home.clear();
@@ -384,6 +559,6 @@ mod tests {
             old,
             Ok(vec![item("previous-session")])
         ));
-        assert!(home.shelves().is_empty());
+        assert!(home.shelves(&prefs).is_empty());
     }
 }

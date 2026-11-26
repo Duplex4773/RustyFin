@@ -182,13 +182,17 @@ impl Library {
                 let face =
                     self.catalog_face(item, layout.card_width, layout.poster, selected, &id, cx);
                 line.child(
-                    card_frame(face, layout.card_width, selected, id).on_click(cx.listener(
-                        move |s, _, w, cx| {
-                            if let Some(item) = s.state.wall.item(i).cloned() {
-                                s.open_item(item, w, cx);
-                            }
-                        },
-                    )),
+                    accessibility::poster_button(
+                        card_frame(face, layout.card_width, selected, id),
+                        item,
+                        accessibility::Poster::Browse(i),
+                        selected,
+                    )
+                    .on_click(cx.listener(move |s, _, w, cx| {
+                        if let Some(item) = s.state.wall.item(i).cloned() {
+                            s.open_item(item, w, cx);
+                        }
+                    })),
                 )
             } else {
                 line.child(

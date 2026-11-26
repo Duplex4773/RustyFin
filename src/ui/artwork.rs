@@ -147,7 +147,13 @@ impl Library {
                             .iter()
                             .filter_map(|p| p.portrait(item.origin.as_deref())),
                     );
-                    plan.extend(self.state.extras[extras].iter().filter_map(Item::landscape));
+                    plan.extend(
+                        self.state
+                            .extra_items()
+                            .skip(extras.start)
+                            .take(extras.len())
+                            .filter_map(Item::landscape),
+                    );
                 }
                 plan.extend(
                     items[range]

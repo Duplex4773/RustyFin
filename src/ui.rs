@@ -1,3 +1,4 @@
+mod accessibility;
 mod anime;
 mod artwork;
 mod captions;
@@ -117,7 +118,7 @@ struct ViewState {
     seasons: Vec<Item>,
     series_target: Option<Item>,
     reload_series_target: bool,
-    extras: Vec<Item>,
+    extras: [screens::ExtraFeed; 2],
     timers: Vec<crate::jellyfin::live::Timer>,
     choice: MediaChoice,
     info_open: bool,
@@ -154,7 +155,7 @@ impl ViewState {
             seasons: Vec::new(),
             series_target: None,
             reload_series_target: false,
-            extras: vec![],
+            extras: Default::default(),
             timers: vec![],
             choice: Default::default(),
             info_open: false,
@@ -182,6 +183,7 @@ impl ViewState {
 }
 
 pub struct Library {
+    _accessibility: Option<accessibility::Accessibility>,
     address: Entity<InputState>,
     password_sign_in: Option<PasswordSignIn>,
     search: Entity<InputState>,
@@ -200,9 +202,12 @@ pub struct Library {
     flag_job: Option<Task<()>>,
     home: home::Home,
     home_dirty: bool,
+    home_undo: Option<preferences::DismissedTitle>,
+    home_undo_focus: FocusHandle,
     search_target_job: Option<Task<()>>,
     recent_searches: Vec<String>,
     search_delay: Option<Task<()>>,
+    next_search_request: u64,
     state: ViewState,
     history: history::History,
     return_fade: Option<LibraryReturn>,
@@ -210,6 +215,7 @@ pub struct Library {
     libraries: Vec<Item>,
     library_list_job: Option<Task<()>>,
     similar_job: Option<Task<()>>,
+    extras_jobs: [Option<Task<()>>; 2],
     featured: Vec<Item>,
     hero: usize,
     rotate: bool,
@@ -280,7 +286,7 @@ impl Library {
                     this.search_delay = None;
                     this.search_target_job = None;
                     this.job = None;
-                    this.busy = !term.is_empty();
+                    this.busy = false;
                     this.state = ViewState::new(Screen::Search(term));
                     this.message.clear();
                     this.search_delay = Some(cx.spawn_in(w, async move |view, cx| {
@@ -309,6 +315,7 @@ impl Library {
                 None
             });
         let mut view = Self {
+            _accessibility: accessibility::Accessibility::attach(window, cx),
             focus: cx.focus_handle(),
             more_focus: cx.focus_handle(),
             edition_focus: cx.focus_handle(),
@@ -327,9 +334,12 @@ impl Library {
             flag_job: None,
             home: Default::default(),
             home_dirty: false,
+            home_undo: None,
+            home_undo_focus: cx.focus_handle(),
             search_target_job: None,
             recent_searches: vec![],
             search_delay: None,
+            next_search_request: 0,
             state: ViewState::new(Screen::Discover),
             history: Default::default(),
             return_fade: None,
@@ -337,6 +347,7 @@ impl Library {
             libraries: vec![],
             library_list_job: None,
             similar_job: None,
+            extras_jobs: Default::default(),
             featured: vec![],
             hero: 0,
             rotate: true,
@@ -578,6 +589,7 @@ impl Library {
 
     fn clear_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.similar_job = None;
+        self.extras_jobs = Default::default();
         self.return_fade = None;
         self.stop();
         self.failure = None;
@@ -639,6 +651,7 @@ impl Library {
         self.state.reload_on_return |= !has_search_results
             && (self.busy || self.search_delay.is_some() || !self.message.is_empty());
         self.similar_job = None;
+        self.extras_jobs = Default::default();
         self.return_fade = None;
         self.formats.expanded = None;
         self.search_target_job = None;
@@ -839,12 +852,16 @@ impl Library {
                     Self::receive_combined,
                 );
             }
-            Screen::Guide(channel) => self.work(
-                window,
-                cx,
-                move || server.schedule(&channel.id, offset),
-                Self::receive_page,
-            ),
+            Screen::Guide(channel) => {
+                if let Some(server) = self.source_server(channel.origin.as_deref()) {
+                    self.work(
+                        window,
+                        cx,
+                        move || server.schedule(&channel.id, offset),
+                        Self::receive_page,
+                    );
+                }
+            }
             Screen::Timers(series) => self.work(
                 window,
                 cx,
@@ -857,6 +874,11 @@ impl Library {
             Screen::Library(..) => cx.notify(),
             Screen::Search(query) if !query.is_empty() => self.load_search(query, window, cx),
             Screen::Detail(item, _) if item.playable() => {
+                let Some(server) = self.source_server(item.origin.as_deref()) else {
+                    self.message = "This title’s Jellyfin account is unavailable.".into();
+                    cx.notify();
+                    return;
+                };
                 self.work(
                     window,
                     cx,
@@ -866,18 +888,21 @@ impl Library {
                             &server.profile_path()?,
                             &item.id,
                         ))?;
-                        let extras = server.extras(&full)?;
-                        Ok((full, choice, extras))
+                        Ok((full, choice))
                     },
-                    |s, (item, choice, extras), _, _| {
+                    |s, (item, choice), _, _| {
                         s.state.screen = Screen::Detail(Box::new(item), None);
                         s.state.choice = choice;
-                        s.state.extras = extras;
                         Ok(())
                     },
                 );
             }
             Screen::Detail(item, season) if !item.playable() => {
+                let Some(server) = self.source_server(item.origin.as_deref()) else {
+                    self.message = "This title’s Jellyfin account is unavailable.".into();
+                    cx.notify();
+                    return;
+                };
                 let known = self.state.seasons.clone();
                 let hydrate = self.state.page.is_none() && offset == 0 && known.is_empty();
                 let origin = item
@@ -959,14 +984,9 @@ impl Library {
                                 .or_else(|| episodes.iter().find(|ep| ep.playable()))
                                 .cloned();
                         }
-                        let extras =
-                            (series && hydrate).then(|| server.extras(&item).unwrap_or_default());
-                        Ok((page, seasons, season, item, target, start, extras))
+                        Ok((page, seasons, season, item, target, start))
                     },
-                    move |s, (page, seasons, season, item, target, start, extras), w, cx| {
-                        if let Some(extras) = extras {
-                            s.state.extras = extras;
-                        }
+                    move |s, (page, seasons, season, item, target, start), w, cx| {
                         s.state.screen = Screen::Detail(item, season);
                         s.state.seasons = seasons;
                         if let Screen::Detail(_, Some(id)) = &s.state.screen
@@ -1009,7 +1029,11 @@ impl Library {
                 .iter()
                 .chain(&self.connected)
                 .find(|s| s.identity().is_some_and(|a| a.key() == key))
-                .cloned();
+                .cloned()
+                .or_else(|| {
+                    let account = self.accounts.iter().find(|a| a.key() == key)?;
+                    Server::restore(account.clone()).ok()
+                });
         }
         self.server.clone()
     }
@@ -1036,6 +1060,9 @@ impl Library {
         }
         self.similar_job = None;
         self.state.similar = None;
+        self.extras_jobs = Default::default();
+        self.state.extras = Default::default();
+        self.state.extra_start = 0;
         if matches!(self.state.screen, Screen::Library(..)) {
             self.state.wall.invalidate();
         }
@@ -1079,26 +1106,20 @@ impl Library {
         cx.notify();
     }
 
-    fn adopt_server(&mut self, item: &Item, w: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(key) = &item.origin else { return true };
-        let active = self
-            .server
-            .as_ref()
-            .and_then(Server::identity)
-            .map(|a| a.key());
-        if active.as_ref() == Some(key) {
-            return true;
-        }
-        if !self.activate_profile(key, w, cx) {
-            return false;
-        }
-        if matches!(self.state.screen, Screen::Search(_)) {
-            self.state.profile = active;
-        } else {
-            self.history.clear();
-            self.state = ViewState::new(Screen::Discover);
-        }
-        true
+    fn detail_server(&self) -> Option<Server> {
+        let Screen::Detail(item, _) = &self.state.screen else {
+            return None;
+        };
+        self.source_server(item.origin.as_deref())
+    }
+
+    fn owns_download_scope(&self, item: &Item) -> bool {
+        item.origin.as_ref().is_none_or(|origin| {
+            self.server
+                .as_ref()
+                .and_then(Server::identity)
+                .is_some_and(|a| a.key() == *origin)
+        })
     }
     fn activate_profile(&mut self, key: &str, w: &mut Window, cx: &mut Context<Self>) -> bool {
         if self
@@ -1167,7 +1188,7 @@ impl Library {
                 w,
                 cx,
             );
-        } else if self.adopt_server(&item, w, cx) {
+        } else {
             self.navigate(Screen::Detail(Box::new(item), None), w, cx);
         }
     }
@@ -1190,14 +1211,11 @@ impl Library {
         self.artwork.trickplay.clear(window, cx);
         self.message.clear();
         self.failure = None;
-        let server = self.server.clone().context("Sign in before playback.")?;
-        match Player::open(
-            window,
-            &request,
-            server,
-            self.playing.as_ref().context("Missing title")?,
-            &self.prefs,
-        ) {
+        let item = self.playing.as_ref().context("Missing title")?;
+        let server = self
+            .source_server(item.origin.as_deref())
+            .context("This title’s Jellyfin account is unavailable.")?;
+        match Player::open(window, &request, server, item, &self.prefs) {
             Ok(mut player) => {
                 if !player.audio_only {
                     self.fullscreen_before_video

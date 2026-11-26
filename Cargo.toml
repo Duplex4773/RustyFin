@@ -7,7 +7,10 @@ repository = "https://github.com/Duplex4773/RustyFin"
 license = "MIT"
 
 [dependencies]
+accesskit = "0.24.1"
+accesskit_windows = { version = "0.34.0", path = "vendor/accesskit_windows" }
 anyhow = "1"
+async-channel = "2"
 base64 = "0.22"
 gpui = { version = "0.2.2", default-features = false, features = ["windows-manifest"] }
 gpui-component = "=0.5.1"

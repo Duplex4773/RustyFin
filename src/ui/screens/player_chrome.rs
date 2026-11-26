@@ -388,7 +388,12 @@ impl Library {
                     .child(overlay_text(clock(time), 14., FontWeight::MEDIUM))
                     .child(remaining),
             )
-            .child(track)
+            .child(accessibility::timeline(
+                track,
+                duration,
+                time,
+                &self.menu_focus.timeline,
+            ))
     }
 
     fn volume_control(&self, w: &Window, p: &Player, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -467,16 +472,25 @@ impl Library {
             .flex()
             .items_center()
             .when(
-                self.controls.volume_hovered
+                accessibility::active()
+                    || self.controls.volume_hovered
                     || (p.keyboard_controls() && self.menu_focus.volume.is_focused(w)),
-                |d| d.pl_2().gap_1().child(slider),
+                |d| {
+                    d.pl_2().gap_1().child(accessibility::volume(
+                        slider,
+                        value,
+                        &self.menu_focus.volume,
+                    ))
+                },
             )
             .child(
-                transport_button(
-                    if value == 0. { "Unmute" } else { "Mute" },
-                    if value == 0. { "\u{e74f}" } else { "\u{e767}" },
+                accessibility::focus(
+                    transport_button(
+                        if value == 0. { "Unmute" } else { "Mute" },
+                        if value == 0. { "\u{e74f}" } else { "\u{e767}" },
+                    ),
+                    &self.menu_focus.volume,
                 )
-                .track_focus(&self.menu_focus.volume)
                 .on_click(cx.listener(|s, _, _, cx| s.volume(None, cx))),
             )
             .on_hover(cx.listener(|s, inside, _, cx| {
@@ -494,13 +508,15 @@ impl Library {
         page: PlayerMenu,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        transport_button(name, glyph)
-            .track_focus(self.menu_focus.launcher(page))
-            .when(
-                self.player.as_ref().is_some_and(|p| p.panel_open) && self.controls.menu == page,
-                |d| d.text_color(rgb(LIME)),
-            )
-            .on_click(cx.listener(move |s, _, w, cx| s.toggle_player_menu(page, w, cx)))
+        accessibility::focus(
+            transport_button(name, glyph),
+            self.menu_focus.launcher(page),
+        )
+        .when(
+            self.player.as_ref().is_some_and(|p| p.panel_open) && self.controls.menu == page,
+            |d| d.text_color(rgb(LIME)),
+        )
+        .on_click(cx.listener(move |s, _, w, cx| s.toggle_player_menu(page, w, cx)))
     }
 
     fn skip_button(&self, forward: bool, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -620,11 +636,13 @@ impl Library {
             playback = playback.child(self.skip_button(false, cx));
         }
         playback = playback.child(
-            transport_button(
-                if p.status.paused { "Play" } else { "Pause" },
-                if p.status.paused { "\u{f5b0}" } else { PAUSE },
+            accessibility::focus(
+                transport_button(
+                    if p.status.paused { "Play" } else { "Pause" },
+                    if p.status.paused { "\u{f5b0}" } else { PAUSE },
+                ),
+                &self.menu_focus.play_pause,
             )
-            .track_focus(&self.menu_focus.play_pause)
             .on_click(cx.listener(|s, _, _, cx| s.control(None, cx))),
         );
         if p.seekable {

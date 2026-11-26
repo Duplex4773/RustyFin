@@ -57,6 +57,11 @@ impl Library {
         }
     }
     pub(super) fn enqueue_download(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.owns_download_scope(&item) {
+            self.message = "Switch to this title’s Jellyfin profile to download it.".into();
+            cx.notify();
+            return;
+        }
         let Some(server) = self.server.clone() else {
             return;
         };
@@ -139,6 +144,11 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.owns_download_scope(&parent) {
+            self.message = "Switch to this title’s Jellyfin profile to download it.".into();
+            cx.notify();
+            return;
+        }
         let Some(server) = self.server.clone() else {
             return;
         };

@@ -19,12 +19,12 @@ impl Library {
                     14.,
                     MUTED,
                 ))
-                .child(self.settings_input(&self.anime.app_id, cx))
+                .child(self.settings_input(&self.anime.app_id, "AniList application ID", false, cx))
                 .child(
                     self.service_button(cx, "anime-auth", "Authorize PIN application", None, false)
                         .on_click(cx.listener(|s, _, _, cx| s.authorize_anime(cx))),
                 )
-                .child(self.settings_input(&self.anime.pin, cx));
+                .child(self.settings_input(&self.anime.pin, "AniList PIN", true, cx));
         }
         if signed {
             let on = self.prefs.anime_sync;
@@ -68,7 +68,7 @@ impl Library {
             .size_full()
             .overflow_y_scroll()
             .p_5()
-            .child(title("Explore", 26.))
+            .child(page_heading("Explore", 26.))
             .child(self.catalog_sources(true, cx));
         if let Some(m) = &self.anime.selected {
             let mut panel = div()

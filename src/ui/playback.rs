@@ -330,6 +330,7 @@ impl Library {
     }
 
     pub(super) fn load_preferences(&mut self) {
+        self.home_undo = None;
         self.formats.clear();
         let result = self
             .server
@@ -379,7 +380,8 @@ impl Library {
         cx.notify();
     }
     pub(super) fn choose(&mut self, choice: MediaChoice, cx: &mut Context<Self>) {
-        let (Some(server), Screen::Detail(item, _)) = (&self.server, &self.state.screen) else {
+        let (Some(server), Screen::Detail(item, _)) = (self.detail_server(), &self.state.screen)
+        else {
             return;
         };
         match server
@@ -403,7 +405,9 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
+            self.message = "This title’s Jellyfin account is unavailable.".into();
+            cx.notify();
             return;
         };
         self.downloads.playing = None;
@@ -464,7 +468,7 @@ impl Library {
             }
             return;
         }
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
             return;
         };
         let prefs = self.prefs.clone();
@@ -531,7 +535,7 @@ impl Library {
             self.play_download(download, w, cx);
             return;
         }
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.source_server(retry.item.origin.as_deref()) else {
             return;
         };
         let prefs = self.prefs.clone();
@@ -562,9 +566,13 @@ impl Library {
         if self.busy || self.downloads.playing.is_some() {
             return;
         }
-        let (Some(server), Some(item), Some(player)) =
-            (self.server.clone(), self.playing.clone(), &self.player)
-        else {
+        let (Some(server), Some(item), Some(player)) = (
+            self.playing
+                .as_ref()
+                .and_then(|item| self.source_server(item.origin.as_deref())),
+            self.playing.clone(),
+            &self.player,
+        ) else {
             return;
         };
         if !player.status.ready {
@@ -618,7 +626,9 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(server) = self.server.clone() else {
+        let Some(server) =
+            self.source_server(parent.as_ref().and_then(|item| item.origin.as_deref()))
+        else {
             return;
         };
         self.work(
@@ -714,7 +724,7 @@ impl Library {
         let Some(item) = self.playing.clone().filter(|i| i.kind == "Episode") else {
             return;
         };
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
             return;
         };
         let generation = self.generation;
@@ -855,7 +865,7 @@ impl Library {
             && !self.controls.next_lookup_finished
             && let Some(item) = self.playing.clone()
             && item.kind == "Episode"
-            && let Some(server) = self.server.clone()
+            && let Some(server) = self.source_server(item.origin.as_deref())
         {
             self.work(
                 w,
@@ -886,9 +896,6 @@ impl Library {
                 w,
                 cx,
             );
-            return;
-        }
-        if !self.adopt_server(&item, w, cx) {
             return;
         }
         if self.player.as_ref().is_some_and(|p| p.audio_only) {

@@ -28,7 +28,7 @@ impl Library {
             .gap_2()
             .child(title("MDBList ratings", 18.))
             .when(!linked, |d| {
-                d.child(self.settings_input(&self.services.mdb_input, cx))
+                d.child(self.settings_input(&self.services.mdb_input, "MDBList API key", true, cx))
             })
             .child(ratings)
             .child(title("Discord Rich Presence", 18.));
@@ -36,7 +36,12 @@ impl Library {
             let description = "Share the current title through the Discord desktop client using your Discord application ID.";
             panel = panel
                 .child(label(description, 14., MUTED))
-                .child(self.settings_input(&self.services.discord_input, cx));
+                .child(self.settings_input(
+                    &self.services.discord_input,
+                    "Discord application ID",
+                    false,
+                    cx,
+                ));
         }
         panel.child(presence)
     }
@@ -61,8 +66,8 @@ impl Library {
                 14.,
                 MUTED,
             ))
-            .child(self.settings_input(&self.explore.address, cx))
-            .child(self.settings_input(&self.explore.key, cx))
+            .child(self.settings_input(&self.explore.address, "Seerr server address", false, cx))
+            .child(self.settings_input(&self.explore.key, "Seerr API key", true, cx))
             .child(
                 self.service_button(cx, "connect-seerr", "Connect Seerr", None, true)
                     .on_click(cx.listener(|s, _, w, cx| s.connect_seerr(w, cx))),
@@ -76,7 +81,7 @@ impl Library {
             .size_full()
             .overflow_y_scroll()
             .p_5()
-            .child(title("Explore", 26.))
+            .child(page_heading("Explore", 26.))
             .child(self.catalog_sources(false, cx));
         if self.explore.client.is_none() {
             return div()

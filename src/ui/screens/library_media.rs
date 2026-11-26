@@ -24,7 +24,7 @@ impl Library {
                             )
                         },
                     )
-                    .child(title("Downloads", 26.)),
+                    .child(page_heading("Downloads", 26.)),
             );
         if !self.downloads.notice.is_empty() {
             body = body.child(label(self.downloads.notice.clone(), 14., TEXT).py_3());

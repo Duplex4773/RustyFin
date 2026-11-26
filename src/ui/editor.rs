@@ -25,7 +25,7 @@ impl SubtitleSearch {
 }
 impl Library {
     pub(super) fn open_editor(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
             return;
         };
         self.work(
@@ -50,7 +50,7 @@ impl Library {
         );
     }
     pub(super) fn save_editor(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        let (Some(editor), Some(server)) = (&self.state.editor, self.server.clone()) else {
+        let (Some(editor), Some(server)) = (&self.state.editor, self.detail_server()) else {
             return;
         };
         if self.busy {
@@ -75,7 +75,7 @@ impl Library {
         Ok(())
     }
     pub(super) fn pick_art(&mut self, kind: &'static str, w: &mut Window, cx: &mut Context<Self>) {
-        let (Some(editor), Some(server)) = (&self.state.editor, self.server.clone()) else {
+        let (Some(editor), Some(server)) = (&self.state.editor, self.detail_server()) else {
             return;
         };
         let item = editor.item.id.clone();
@@ -89,7 +89,7 @@ impl Library {
             let path = selected.await;
             let _ = view.update_in(cx, |s, w, cx| {
                 if s.state.editor.as_ref().is_none_or(|e| e.item.id != item)
-                    || s.server
+                    || s.detail_server()
                         .as_ref()
                         .and_then(Server::identity)
                         .map(|a| a.key())
@@ -123,7 +123,7 @@ impl Library {
         .detach();
     }
     pub(super) fn search_subtitles(&mut self, id: String, w: &mut Window, cx: &mut Context<Self>) {
-        let (Some(search), Some(server)) = (&self.state.subtitle_search, self.server.clone())
+        let (Some(search), Some(server)) = (&self.state.subtitle_search, self.detail_server())
         else {
             return;
         };
@@ -147,7 +147,7 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.detail_server() else {
             return;
         };
         if !self.busy {

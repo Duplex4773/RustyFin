@@ -17,7 +17,7 @@ pub mod offline;
 pub mod trickplay;
 pub use catalog::catalog_initial;
 pub use catalog::{Art, ArtKind, CatalogQuery, LIBRARY_PAGE_SIZE, PAGE_SIZE, Shelf, ShelfKind};
-pub use media::{Chapter, Lyric, MediaChoice, Segment};
+pub use media::{Chapter, ExtraKind, Lyric, MediaChoice, Segment};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Account {

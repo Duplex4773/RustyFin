@@ -8,6 +8,7 @@ pub(in crate::ui) enum SettingsPage {
     Services,
     Profiles,
     Shortcuts,
+    Home,
 }
 
 impl SettingsPage {
@@ -19,6 +20,7 @@ impl SettingsPage {
             Self::Services => "Services",
             Self::Profiles => "Profiles",
             Self::Shortcuts => "Video player controls",
+            Self::Home => "Customise Home",
         }
     }
 }
@@ -42,10 +44,21 @@ pub(super) fn rows<const N: usize>(items: [Stateful<Div>; N]) -> Div {
 }
 
 pub(super) fn heading(name: &'static str) -> Div {
-    label(name, 14., MUTED)
+    accessibility::heading(label(name, 14., MUTED), name.into(), 2)
         .font_weight(FontWeight::SEMIBOLD)
         .mt(px(24.))
         .mb(px(7.))
+}
+
+pub(super) enum SettingAdornment {
+    Content(Div),
+    Switch(bool),
+}
+
+impl From<Div> for SettingAdornment {
+    fn from(value: Div) -> Self {
+        Self::Content(value)
+    }
 }
 
 impl Library {
@@ -56,9 +69,14 @@ impl Library {
         glyph: &'static str,
         name: impl Into<SharedString>,
         description: impl Into<SharedString>,
-        trailing: Div,
+        trailing: impl Into<SettingAdornment>,
     ) -> Stateful<Div> {
         let description = description.into();
+        let name = name.into();
+        let (trailing, state) = match trailing.into() {
+            SettingAdornment::Content(div) => (div, None),
+            SettingAdornment::Switch(on) => (draw_toggle(on), Some(on)),
+        };
         let button = div()
             .id(id)
             .focusable()
@@ -91,17 +109,25 @@ impl Library {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(label(name, 15., TEXT))
+                    .child(label(name.clone(), 15., TEXT))
                     .when(!description.is_empty(), |d| {
                         d.child(label(description, 13., 0xbfc0c5))
                     }),
             )
             .child(trailing.flex_none());
+        let button = match state {
+            Some(on) => accessibility::switch(button, name, on),
+            None => accessibility::button(button, name, None, false),
+        };
         self.settings_button(button, cx)
     }
 }
 
-pub(super) fn toggle(on: bool) -> Div {
+pub(super) fn toggle(on: bool) -> SettingAdornment {
+    SettingAdornment::Switch(on)
+}
+
+fn draw_toggle(on: bool) -> Div {
     div()
         .w(px(39.))
         .h(px(23.))
@@ -150,6 +176,7 @@ impl Library {
                 ),
                 self.category(Display, "\u{e7f4}", "Monitor and Windows HDR settings", cx),
                 self.category(Services, REFRESH, "Seerr, AniList, MDBList and Discord", cx),
+                self.category(Home, "\u{e713}", "Arrange shelves and pin shortcuts", cx),
                 self.settings_row(
                     cx,
                     "rotation",
@@ -315,16 +342,17 @@ impl Library {
             .mb(px(20.))
             .when(page != SettingsPage::Overview, |d| {
                 d.child(
-                    self.settings_button(glyph_button("Back to settings", BACK), cx)
+                    self.settings_button(glyph_button("Back", BACK), cx)
                         .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                 )
             })
-            .child(title(page.title(), 21.));
+            .child(page_heading(page.title(), 21.));
         let card = |form: Div| div().w_full().rounded_lg().bg(rgb(SURFACE)).child(form);
         let body = match page {
             SettingsPage::Overview => self.settings_overview(cx),
             SettingsPage::Profiles => self.profile_settings(cx),
             SettingsPage::Shortcuts => self.shortcuts_settings(cx),
+            SettingsPage::Home => self.home_settings(cx),
             SettingsPage::Display => card(self.display_settings(cx).px_4().py_3()),
             SettingsPage::Playback => self.playback_settings(cx),
             SettingsPage::Services => group()

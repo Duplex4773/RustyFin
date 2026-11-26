@@ -35,7 +35,7 @@ impl Library {
         if self.state.similar.is_some() || self.similar_job.is_some() {
             return;
         }
-        let (Some(id), Some(server)) = (self.state.similar_id(), self.server.clone()) else {
+        let (Some(id), Some(server)) = (self.state.similar_id(), self.detail_server()) else {
             return;
         };
         let id = id.to_owned();
@@ -79,7 +79,7 @@ impl Library {
             .flex()
             .items_center()
             .justify_between()
-            .child(title("More like this", 21.));
+            .child(section_heading("More like this", 21.));
         if result.is_err() {
             return Some(
                 section.child(header).child(
@@ -131,18 +131,25 @@ impl Library {
         let mut row = div().flex().gap(px(CATALOG_GAP));
         let last = items.len() - 1;
         for i in range {
+            let focus = &self.state.similar_focus[i];
+            let card = self.card(
+                &items[i],
+                layout.card_width,
+                CardLayout::Catalog {
+                    poster: layout.poster,
+                },
+                focus.is_focused(w),
+                ("similar-title", i).into(),
+                cx,
+            );
             row = row.child(
-                self.card(
+                accessibility::title_button(
+                    card,
                     &items[i],
-                    layout.card_width,
-                    CardLayout::Catalog {
-                        poster: layout.poster,
-                    },
-                    self.state.similar_focus[i].is_focused(w),
-                    ("similar-title", i).into(),
-                    cx,
+                    Some(focus.clone()),
+                    focus.is_focused(w),
                 )
-                .track_focus(&self.state.similar_focus[i])
+                .track_focus(focus)
                 .tab_stop(true)
                 .rounded_md()
                 .on_key_down(cx.listener(move |s, event: &KeyDownEvent, w, cx| {

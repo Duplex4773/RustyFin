@@ -1,9 +1,22 @@
 use super::*;
+use crate::jellyfin::ExtraKind;
 use std::ops::Range;
 
 const CAST_WIDTH: f32 = 132.;
 const EXTRA_WIDTH: f32 = 200.;
 const GAP: f32 = 12.;
+
+pub(in crate::ui) type ExtraFeed = Option<Result<Vec<Item>, String>>;
+
+impl ViewState {
+    pub(in crate::ui) fn extra_items(&self) -> impl Iterator<Item = &Item> {
+        self.extras
+            .iter()
+            .flatten()
+            .filter_map(|feed| feed.as_ref().ok())
+            .flatten()
+    }
+}
 
 fn page_range(start: usize, total: usize, width: f32, card: f32) -> Range<usize> {
     let count = ((width + GAP) / (card + GAP)).floor().max(1.) as usize;
@@ -24,7 +37,12 @@ pub(in crate::ui) fn credit_ranges(
             width,
             CAST_WIDTH,
         ),
-        page_range(state.extra_start, state.extras.len(), width, EXTRA_WIDTH),
+        page_range(
+            state.extra_start,
+            state.extra_items().count(),
+            width,
+            EXTRA_WIDTH,
+        ),
     )
 }
 
@@ -46,8 +64,91 @@ fn card(id: ElementId, width: f32) -> Stateful<Div> {
 }
 
 impl Library {
+    pub(super) fn load_extras(&mut self, w: &Window, cx: &mut Context<Self>) {
+        let Screen::Detail(item, _) = &self.state.screen else {
+            return;
+        };
+        if self.busy || ExtraKind::ALL.iter().all(|kind| kind.count(item) == 0) {
+            return;
+        }
+        let Some(server) = self.detail_server() else {
+            return;
+        };
+        for (index, kind) in ExtraKind::ALL.into_iter().enumerate() {
+            if kind.count(item) == 0
+                || self.state.extras[index].is_some()
+                || self.extras_jobs[index].is_some()
+            {
+                continue;
+            }
+            let item = item.clone();
+            let server = server.clone();
+            let worker = cx
+                .background_executor()
+                .spawn(async move { server.extras(&item, kind) });
+            // Navigation cancels the UI callback. Completed feeds are cached with the detail view.
+            self.extras_jobs[index] = Some(cx.spawn_in(w, async move |view, cx| {
+                let result = worker.await;
+                let _ = view.update(cx, |s, cx| {
+                    s.extras_jobs[index] = None;
+                    s.state.extras[index] = Some(result.map_err(|error| error.to_string()));
+                    cx.notify();
+                });
+            }));
+        }
+    }
+
+    pub(super) fn extras_notice(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let pending = self.extras_jobs.iter().any(Option::is_some);
+        let failed: Vec<_> = ExtraKind::ALL
+            .into_iter()
+            .zip(&self.state.extras)
+            .filter_map(|(kind, result)| {
+                result
+                    .as_ref()
+                    .is_some_and(Result::is_err)
+                    .then_some(kind.label())
+            })
+            .collect();
+        let text = if !failed.is_empty() {
+            format!("Couldn’t load {}.", failed.join(" and "))
+        } else if pending {
+            "Loading trailers and extras…".into()
+        } else {
+            return None;
+        };
+        let status = label(text.clone(), 14., MUTED)
+            .relative()
+            .children(accessibility::status(&text));
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(status)
+                .when(!failed.is_empty(), |d| {
+                    d.child(
+                        pill(
+                            "retry-extras",
+                            "Retry trailers and extras",
+                            Some(REFRESH),
+                            false,
+                        )
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            for feed in &mut s.state.extras {
+                                if feed.as_ref().is_some_and(Result::is_err) {
+                                    *feed = None;
+                                }
+                            }
+                            cx.notify();
+                        })),
+                    )
+                }),
+        )
+    }
+
     pub(super) fn open_person(&mut self, id: &str, w: &mut Window, cx: &mut Context<Self>) {
-        let Some(server) = self.server.clone() else {
+        let Some(server) = self.detail_server() else {
             return;
         };
         let id = id.to_owned();
@@ -106,7 +207,7 @@ impl Library {
             .flex()
             .items_center()
             .justify_between()
-            .child(title(text, 21.))
+            .child(section_heading(text, 21.))
             .child(buttons)
     }
 
@@ -171,10 +272,17 @@ impl Library {
                 .child(self.credit_heading(true, &cast, people.len(), cx))
                 .child(cards);
         }
-        if !extras.is_empty() {
+        let notice = self.extras_notice(cx);
+        if !extras.is_empty() || notice.is_some() {
             let mut cards = div().flex().gap(px(GAP));
-            for i in extras.clone() {
-                let extra = self.state.extras[i].clone();
+            for (i, extra) in self
+                .state
+                .extra_items()
+                .enumerate()
+                .skip(extras.start)
+                .take(extras.len())
+            {
+                let extra = extra.clone();
                 let mut still = div()
                     .w_full()
                     .h(px(108.))
@@ -204,8 +312,9 @@ impl Library {
                 );
             }
             view = view
-                .child(self.credit_heading(false, &extras, self.state.extras.len(), cx))
-                .child(cards);
+                .child(self.credit_heading(false, &extras, self.state.extra_items().count(), cx))
+                .children(notice)
+                .when(!extras.is_empty(), |d| d.child(cards));
         }
         view
     }

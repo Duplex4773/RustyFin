@@ -119,7 +119,10 @@ impl Library {
     }
 
     pub(super) fn load_episode_drawer(&mut self, w: &Window, cx: &mut Context<Self>) {
-        let (Some(playing), Some(server)) = (self.playing.clone(), self.server.clone()) else {
+        let Some(playing) = self.playing.clone() else {
+            return;
+        };
+        let Some(server) = self.source_server(playing.origin.as_deref()) else {
             return;
         };
         let Some(series) = playing.series_id.clone() else {

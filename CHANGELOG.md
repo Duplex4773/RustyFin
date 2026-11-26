@@ -2,6 +2,23 @@
 
 Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
+## 2026-11-26 - Narrator headings, per-server Search and independent trailers
+
+- Discover, Search, Browse, title details and settings expose headings with native Windows UI Automation levels. Settings and player switches report their on/off state and can be toggled using assistive technology.
+- Search gives each responding server its own labelled result rows. Results from slower servers appear even when the first server has filled its initial batch, and each row can be paged independently.
+- Title details and playback choices load independently of trailers and bonus features. A failed request leaves the detail page and any available extras usable, with a retry in the extras section.
+
+## 2026-11-25 - Accessible controls and multi-server browsing
+
+- Windows UI Automation exposes named controls for sign-in, navigation, posters, settings and playback. Assistive technology can focus posters, seek and adjust volume.
+- Opening or playing a title from another Jellyfin server keeps the active RustyFin profile. Playback and progress use the title’s server, and Back returns to the original view.
+- Search displays the first results while other servers are still responding. If a server fails, results from available servers stay visible and Search offers a retry.
+
+## 2026-11-25 - Discover personalisation
+
+- **Customise Home** lets each profile reorder or hide shelves, pin Favourites and libraries, and restore the default layout. The controls work with mouse, keyboard and controller.
+- **Remove from Continue Watching** hides a title from that profile’s shelf while preserving its playback progress. **Undo** restores the title to the shelf.
+
 ## 2026-11-24 - Profile 7 FEL playback and Windows Dolby Vision
 
 - RustyFin uses mpv to reconstruct Profile 7 FEL from both video layers. If reconstruction fails, playback resumes at the same position using the HDR10 base layer. Both paths support SDR tone mapping.

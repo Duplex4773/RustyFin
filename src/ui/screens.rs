@@ -3,10 +3,11 @@ mod browse;
 mod catalog;
 mod catalog_poster;
 mod credits;
-pub(super) use credits::credit_ranges;
+pub(super) use credits::{ExtraFeed, credit_ranges};
 mod detail;
 use detail::detail_tool;
 mod discover;
+mod home_settings;
 pub(super) use discover::{featured_titles, marquee_art};
 mod controller_search;
 mod editor;
@@ -91,9 +92,17 @@ fn label(text: impl Into<SharedString>, size: f32, color: u32) -> Div {
 fn title(text: impl Into<SharedString>, size: f32) -> Div {
     label(text, size, TEXT).font_weight(FontWeight::SEMIBOLD)
 }
+fn page_heading(text: impl Into<SharedString>, size: f32) -> Div {
+    let text = text.into();
+    accessibility::heading(title(text.clone(), size), text, 1)
+}
+fn section_heading(text: impl Into<SharedString>, size: f32) -> Div {
+    let text = text.into();
+    accessibility::heading(title(text.clone(), size), text, 2)
+}
 fn tip(button: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
-    button
+    accessibility::button(button, text.clone(), None, false)
         .focusable()
         .tab_stop(true)
         .focus(|d| d.border_1().border_color(rgb(TEXT)))
@@ -134,7 +143,8 @@ fn pill(
     code: Option<&'static str>,
     active: bool,
 ) -> Stateful<Div> {
-    div()
+    let text = text.into();
+    let control = div()
         .id(id)
         .focusable()
         .tab_stop(true)
@@ -154,7 +164,8 @@ fn pill(
         .font_weight(FontWeight::SEMIBOLD)
         .hover(move |d| d.bg(rgb(if active { 0xffffff } else { ACTIVE })))
         .when_some(code, |d, code| d.child(icon(code, 13.)))
-        .child(text.into())
+        .child(text.clone());
+    accessibility::button(control, text, None, false)
 }
 fn episode_play_label(item: &Item) -> String {
     let action = if item.position() > 0 {
@@ -542,7 +553,12 @@ impl Library {
             picture = picture.child(
                 self.popup_trigger(
                     id.clone(),
-                    button,
+                    accessibility::button(
+                        button,
+                        format!("More actions for {}", item.name),
+                        None,
+                        false,
+                    ),
                     discover::continue_menu(item.clone()),
                     cx,
                 )
@@ -633,17 +649,14 @@ impl Library {
     }
 
     fn wordmark(&self, item: &Item, width: f32, height: f32) -> Div {
-        self.title_logo(item, width, height).unwrap_or_else(|| {
-            title(
-                item.series_name
-                    .clone()
-                    .unwrap_or_else(|| item.name.clone()),
-                (width / 7.).clamp(30., 48.),
-            )
-            .line_height(px(49.))
-            .line_clamp(2)
-            .max_w(px(width * 1.65))
-        })
+        let name = item.series_name.as_ref().unwrap_or(&item.name);
+        let wordmark = self.title_logo(item, width, height).unwrap_or_else(|| {
+            title(name.clone(), (width / 7.).clamp(30., 48.))
+                .line_height(px(49.))
+                .line_clamp(2)
+                .max_w(px(width * 1.65))
+        });
+        accessibility::heading(wordmark, name.clone().into(), 1)
     }
 
     fn play_button(&self, item: &Item, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -958,7 +971,7 @@ impl Library {
                     .px_5()
                     .pt_2()
                     .pb_4()
-                    .child(title("Overview", 21.))
+                    .child(section_heading("Overview", 21.))
                     .child(label(text.clone(), 15., TEXT).mt_2().line_height(px(23.))),
             );
         }
@@ -966,7 +979,7 @@ impl Library {
             head = head.child(label(genres.join("  ·  "), 13., MUTED).px_5().pb_4());
         }
         let mut supplements = div();
-        if item.kind == "Series" {
+        if item.kind == "Series" && self.owns_download_scope(item) {
             let rule = self.downloads.rules.iter().find(|r| r.series == item.id);
             let mut row = div()
                 .px_5()
@@ -1011,7 +1024,7 @@ impl Library {
                             .items_center()
                             .flex_wrap()
                             .gap_3()
-                            .child(title("Ratings", 17.))
+                            .child(section_heading("Ratings", 17.))
                             .children(additional.map(|score| {
                                 let value = score
                                     .score
@@ -1047,7 +1060,7 @@ impl Library {
                 .px_5()
                 .when(cinematic, |d| d.px(px(detail::detail_inset(w))))
                 .py_2()
-                .child(title(
+                .child(section_heading(
                     if item.kind == "Series" {
                         "Episodes"
                     } else {
@@ -1207,7 +1220,7 @@ impl Library {
             .child(crate::navigation_icons::waterline(164., 40.));
         if let Some(code) = &self.code {
             panel = panel
-                .child(title("Pair this device", 28.))
+                .child(page_heading("Pair this device", 28.))
                 .child(label(
                     "Open Quick Connect in a signed-in Jellyfin client and enter this code.",
                     15.,
@@ -1225,15 +1238,33 @@ impl Library {
                 );
         } else {
             panel = panel
-                .child(title("Connect to Jellyfin", 28.))
+                .child(page_heading("Connect to Jellyfin", 28.))
                 .child(label("Server address", 14., MUTED))
-                .child(Input::new(&self.address).disabled(self.busy));
+                .child(accessibility::field(
+                    Input::new(&self.address).disabled(self.busy),
+                    &self.address,
+                    "Server address",
+                    false,
+                    cx,
+                ));
             if let Some(form) = &self.password_sign_in {
                 panel = panel
                     .child(label("Username", 14., MUTED))
-                    .child(Input::new(&form.username).disabled(self.busy))
+                    .child(accessibility::field(
+                        Input::new(&form.username).disabled(self.busy),
+                        &form.username,
+                        "Username",
+                        false,
+                        cx,
+                    ))
                     .child(label("Password", 14., MUTED))
-                    .child(Input::new(&form.password).disabled(self.busy))
+                    .child(accessibility::field(
+                        Input::new(&form.password).disabled(self.busy),
+                        &form.password,
+                        "Password",
+                        true,
+                        cx,
+                    ))
                     .child(
                         pill(
                             "password-submit",
@@ -1363,6 +1394,7 @@ impl Render for Library {
             .track_focus(&self.focus)
             .capture_any_mouse_down(cx.listener(|s, _, _, _| s.state.wheel_motion = None))
             .on_key_down(cx.listener(Self::key))
+            .children(accessibility::frame())
             .child(Self::mouse_navigation(cx))
             .children(self.smooth_scrolling(w, cx));
         let chrome_opacity = self
@@ -1371,7 +1403,8 @@ impl Render for Library {
             .filter(|_| !self.controls.mini)
             .map(|p| {
                 let rail_focused = p.keyboard_controls() && self.menu_focus.timeline.is_focused(w);
-                let interacting = self.scrub.is_some()
+                let interacting = accessibility::active()
+                    || self.scrub.is_some()
                     || self.controls.hover.is_some()
                     || self.controls.volume_hovered
                     || self.controls.episode_hover.is_some()
@@ -1443,6 +1476,7 @@ impl Render for Library {
         self.load_wall(w, cx);
         self.fetch_ratings(w, cx);
         self.load_similar(w, cx);
+        self.load_extras(w, cx);
         let discover = matches!(self.state.screen, Screen::Discover);
         let artwork = match &self.state.screen {
             Screen::Discover => self.featured.get(self.hero),

@@ -1,22 +1,24 @@
 use super::*;
 use crate::jellyfin::federation::SearchGroup;
-use std::{collections::BTreeSet, ops::Range};
+use std::ops::Range;
 
 const SEARCH_BATCH: usize = 24;
 
 pub(in crate::ui) struct ResultGroup {
     pub kind: SearchGroup,
     pub page: Page,
+    server: Server,
     start: usize,
     first: usize,
     handles: Vec<FocusHandle>,
 }
 
 impl ResultGroup {
-    fn new(kind: SearchGroup, page: Page, start: usize, cx: &App) -> Self {
+    fn new(kind: SearchGroup, server: Server, page: Page, start: usize, cx: &App) -> Self {
         let handles = page.items.iter().map(|_| cx.focus_handle()).collect();
         Self {
             kind,
+            server,
             page,
             start,
             first: 0,
@@ -26,6 +28,27 @@ impl ResultGroup {
 
     pub(in crate::ui) fn visible(&self, columns: usize) -> Range<usize> {
         self.first..(self.first + columns).min(self.page.items.len())
+    }
+
+    fn heading(&self, federated: bool) -> SharedString {
+        if !federated {
+            return self.kind.label().into();
+        }
+        let source = self.server.identity().map_or_else(
+            || self.server.host().to_owned(),
+            |account| {
+                let address = account
+                    .server
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/');
+                match &account.username {
+                    Some(user) => format!("{address} ({user})"),
+                    None => address.to_owned(),
+                }
+            },
+        );
+        format!("{} · {source}", self.kind.label()).into()
     }
 }
 
@@ -38,9 +61,74 @@ pub(in crate::ui) struct SearchState {
     pub needs_target: bool,
     return_focus: Option<FocusHandle>,
     pub restore_after_playback: bool,
+    request: u64,
+    federated: bool,
+    pending_servers: usize,
+    failures: Vec<String>,
+    jobs: Vec<Task<()>>,
 }
 
 impl SearchState {
+    fn receive(
+        &mut self,
+        server: Server,
+        responses: Vec<(SearchGroup, Result<Page>)>,
+        term: &str,
+        w: &Window,
+        cx: &App,
+    ) -> bool {
+        self.pending_servers = self.pending_servers.saturating_sub(1);
+        let failed: Vec<_> = responses
+            .iter()
+            .filter_map(|(kind, result)| result.is_err().then_some(kind.label()))
+            .collect();
+        if !failed.is_empty() {
+            let host = server
+                .identity()
+                .map_or_else(|| server.host(), |a| a.server.as_str());
+            self.failures
+                .push(if failed.len() == SearchGroup::ALL.len() {
+                    format!("Couldn’t search {host}.")
+                } else {
+                    format!("Couldn’t search {} on {host}.", failed.join(", "))
+                });
+        }
+        let best_from_server = best_title(
+            term,
+            responses
+                .iter()
+                .filter_map(|(_, result)| result.as_ref().ok())
+                .flat_map(|page| page.items.iter()),
+        )
+        .cloned();
+        for (kind, result) in responses {
+            if let Ok(page) = result
+                && !page.items.is_empty()
+            {
+                self.groups
+                    .push(ResultGroup::new(kind, server.clone(), page, 0, cx));
+            }
+        }
+        if self
+            .hero
+            .iter()
+            .any(|handle| handle.is_focused(w) || self.return_focus.as_ref() == Some(handle))
+        {
+            return false;
+        }
+        let best = best_title(term, self.best.iter().chain(&best_from_server));
+        if self.best.as_ref().map(|i| (&i.id, &i.origin)) == best.map(|i| (&i.id, &i.origin)) {
+            return false;
+        }
+        self.best = best.cloned();
+        self.target = self.best.as_ref().filter(|item| item.playable()).cloned();
+        self.needs_target = self.best.as_ref().is_some_and(|item| item.kind == "Series");
+        if self.best.is_some() && self.hero.is_empty() {
+            self.hero = vec![cx.focus_handle(), cx.focus_handle()];
+        }
+        true
+    }
+
     pub(in crate::ui) fn restore_focus(&mut self, window: &mut Window) -> bool {
         let Some(mut focus) = self.return_focus.clone() else {
             return false;
@@ -139,19 +227,28 @@ impl Library {
 
     pub(in crate::ui) fn load_search(&mut self, term: String, w: &Window, cx: &mut Context<Self>) {
         let servers = self.browse_servers();
-        self.work(
-            w,
-            cx,
-            move || {
+        self.next_search_request += 1;
+        let request = self.next_search_request;
+        self.search_target_job = None;
+        self.state.search = SearchState {
+            request,
+            federated: servers.len() > 1,
+            pending_servers: servers.len(),
+            ..Default::default()
+        };
+        self.message.clear();
+        for server in servers {
+            let query = term.clone();
+            let worker = cx.background_executor().spawn(async move {
                 let responses = std::thread::scope(|scope| {
                     let requests: Vec<_> = SearchGroup::ALL
                         .into_iter()
                         .map(|kind| {
-                            let servers = &servers;
-                            let term = &term;
+                            let server = &server;
+                            let term = &query;
                             (
                                 kind,
-                                scope.spawn(move || kind.search(servers, term, 0, SEARCH_BATCH)),
+                                scope.spawn(move || kind.on_server(server, term, 0, SEARCH_BATCH)),
                             )
                         })
                         .collect();
@@ -167,59 +264,30 @@ impl Library {
                         })
                         .collect::<Vec<_>>()
                 });
-                let mut groups = Vec::new();
-                let mut unavailable = BTreeSet::new();
-                let mut failed = Vec::new();
-                for (kind, response) in responses {
-                    match response {
-                        Ok((page, missing)) => {
-                            unavailable.extend(missing);
-                            groups.push((kind, page));
+                (server, query, responses)
+            });
+            self.state
+                .search
+                .jobs
+                .push(cx.spawn_in(w, async move |view, cx| {
+                    let (server, query, responses) = worker.await;
+                    let _ = view.update_in(cx, |s, w, cx| {
+                        if s.state.search.request == request {
+                            if s.state.search.receive(server, responses, &query, w, cx) {
+                                s.search_target_job = None;
+                            }
+                            cx.notify();
+                        } else if let Some(state) = s
+                            .history
+                            .iter_mut()
+                            .find(|state| state.search.request == request)
+                        {
+                            state.search.receive(server, responses, &query, w, cx);
                         }
-                        Err(_) => failed.push(kind.label()),
-                    }
-                }
-                anyhow::ensure!(
-                    !groups.is_empty(),
-                    "No connected Jellyfin server answered Search."
-                );
-                let best = best_title(&term, groups.iter().flat_map(|(_, page)| page.items.iter()))
-                    .cloned();
-                let mut warnings = Vec::new();
-                if !failed.is_empty() {
-                    warnings.push(format!("Could not search {}", failed.join(", ")));
-                }
-                if !unavailable.is_empty() {
-                    warnings.push(format!(
-                        "Unavailable servers · {}",
-                        unavailable.into_iter().collect::<Vec<_>>().join(", ")
-                    ));
-                }
-                Ok((groups, best, warnings.join("  ·  ")))
-            },
-            |s, (groups, best, warning), _, cx| {
-                let target = best.as_ref().filter(|i| i.playable()).cloned();
-                let needs_target = best.as_ref().is_some_and(|i| i.kind == "Series");
-                let hero = best
-                    .iter()
-                    .flat_map(|_| [cx.focus_handle(), cx.focus_handle()])
-                    .collect();
-                s.state.search = SearchState {
-                    groups: groups
-                        .into_iter()
-                        .filter(|(_, p)| !p.items.is_empty())
-                        .map(|(k, p)| ResultGroup::new(k, p, 0, cx))
-                        .collect(),
-                    best,
-                    target,
-                    hero,
-                    needs_target,
-                    ..Default::default()
-                };
-                s.message = warning;
-                Ok(())
-            },
-        );
+                    });
+                }));
+        }
+        cx.notify();
     }
 
     pub(in crate::ui) fn load_search_target(&mut self, w: &Window, cx: &mut Context<Self>) {
@@ -288,43 +356,43 @@ impl Library {
         let Screen::Search(term) = self.state.screen.clone() else {
             return;
         };
-        let group = &mut self.state.search.groups[index];
+        let Some(group) = self.state.search.groups.get_mut(index) else {
+            return;
+        };
         let kind = group.kind;
         let needed = (start + search_grid(kind, w).columns).min(group.page.total_record_count);
-        if start >= group.start && needed <= group.start + group.page.items.len() && start < needed
-        {
+        let loaded = group.start + group.page.items.len();
+        if start >= group.start && start < loaded && needed <= loaded {
             group.first = start - group.start;
             group.handles[group.first].focus(w);
             cx.notify();
             return;
         }
-        let servers = self.browse_servers();
+        let server = group.server.clone();
         self.work(
             w,
             cx,
             move || {
-                let (page, missing) = kind.search(&servers, &term, start, SEARCH_BATCH)?;
+                let page = kind.on_server(&server, &term, start, SEARCH_BATCH)?;
                 if start > 0 && page.items.is_empty() && page.total_record_count > 0 {
                     let last = page.total_record_count.saturating_sub(SEARCH_BATCH);
-                    let (page, missing) = kind.search(&servers, &term, last, SEARCH_BATCH)?;
-                    return Ok((last, page, missing));
+                    let page = kind.on_server(&server, &term, last, SEARCH_BATCH)?;
+                    return Ok((last, page));
                 }
-                Ok((start, page, missing))
+                Ok((start, page))
             },
-            move |s, (start, page, missing), w, cx| {
+            move |s, (start, page), w, cx| {
                 if page.items.is_empty() {
                     s.state.search.groups.remove(index);
                     s.search.read(cx).focus_handle(cx).focus(w);
                     return Ok(());
                 }
-                let group = ResultGroup::new(kind, page, start, cx);
+                let server = s.state.search.groups[index].server.clone();
+                let group = ResultGroup::new(kind, server, page, start, cx);
                 if let Some(first) = group.handles.first() {
                     first.focus(w);
                 }
                 s.state.search.groups[index] = group;
-                if !missing.is_empty() {
-                    s.message = format!("Unavailable servers · {}", missing.join(", "));
-                }
                 Ok(())
             },
         );
@@ -341,21 +409,6 @@ impl Library {
         self.state.search.return_focus = Some(handle.clone());
         self.remember_search();
         if play {
-            // The player owns the active session. Opening a remote copy gives Back
-            // an entry for the originating profile, its query and its focused result.
-            if item.origin.is_some()
-                && self
-                    .server
-                    .as_ref()
-                    .and_then(Server::identity)
-                    .map(|a| a.key())
-                    != item.origin
-            {
-                if !self.adopt_server(&item, w, cx) {
-                    return;
-                }
-                self.navigate(Screen::Detail(Box::new(item.clone()), None), w, cx);
-            }
             self.play_item(item, w, cx);
         } else {
             self.open_item(item, w, cx);
@@ -403,7 +456,7 @@ impl Library {
         let state = &self.state.search;
         // Row numbers correspond to the direct children of the scroll container (including headers).
         let mut rows = Vec::new();
-        let mut y = 0;
+        let mut y = usize::from(self.search_pending()) + usize::from(!state.failures.is_empty());
         if !state.hero.is_empty() {
             rows.push((y, &state.hero[..1 + usize::from(state.target.is_some())]));
             y += 1;
@@ -456,6 +509,12 @@ impl Library {
 }
 
 impl Library {
+    fn search_pending(&self) -> bool {
+        self.state.search.pending_servers > 0
+            || self.search_delay.is_some()
+            || self.state.search.request == 0
+    }
+
     fn best_match(&self, item: &Item, w: &Window, cx: &Context<Self>) -> Div {
         let height = (f32::from(w.viewport_size().height) * 0.22).clamp(122., 178.);
         let width = (height * 16. / 9.).round();
@@ -544,8 +603,7 @@ impl Library {
             let target = target.clone();
             let handle = state.hero[1].clone();
             copy = copy.child(
-                pill("best-play", label, Some(PLAY), true)
-                    .track_focus(&handle)
+                accessibility::focus(pill("best-play", label, Some(PLAY), true), &handle)
                     .mt_1()
                     .bg(rgb(LIME))
                     .hover(|s| s.bg(rgb(0xe7ff9a)))
@@ -559,7 +617,7 @@ impl Library {
             .flex_col()
             .gap_2()
             .pb_4()
-            .child(title("Best match", 18.))
+            .child(section_heading("Best match", 18.))
             .child(div().flex().items_center().gap_4().child(art).child(copy))
     }
 
@@ -574,7 +632,8 @@ impl Library {
         let group = &self.state.search.groups[g];
         let item = &group.page.items[index];
         let handle = group.handles[index].clone();
-        let id: ElementId = (group.kind.label(), index).into();
+        let id: ElementId =
+            SharedString::from(format!("search-result-{g}-{}", group.start + index)).into();
         let selected = handle.is_focused(w);
         let width = layout.card_width;
         let person = group.kind == SearchGroup::People;
@@ -651,28 +710,35 @@ impl Library {
             self.catalog_face(item, width, layout.poster, selected, &id, cx)
         };
         let item = item.clone();
-        card_frame(face, width, selected, id)
-            .track_focus(&handle)
-            .tab_stop(true)
-            .on_click(
-                cx.listener(move |s, _, w, cx| {
-                    s.search_action(item.clone(), false, &handle, w, cx)
-                }),
-            )
+        accessibility::title_button(
+            card_frame(face, width, selected, id),
+            &item,
+            Some(handle.clone()),
+            selected,
+        )
+        .track_focus(&handle)
+        .tab_stop(true)
+        .on_click(
+            cx.listener(move |s, _, w, cx| s.search_action(item.clone(), false, &handle, w, cx)),
+        )
     }
 
     pub(super) fn search_view(&self, term: &str, w: &Window, cx: &mut Context<Self>) -> Div {
-        let input = div()
-            .w_full()
-            .max_w(px(520.))
-            .child(Input::new(&self.search).prefix(icon(SEARCH, 16.)));
+        let input = accessibility::field(
+            Input::new(&self.search).prefix(icon(SEARCH, 16.)),
+            &self.search,
+            "Search titles and people",
+            false,
+            cx,
+        )
+        .max_w(px(520.));
         let header = div()
             .px(px(PAD))
             .py_3()
             .flex()
             .items_center()
             .gap_4()
-            .child(title("Search", 24.).flex_none())
+            .child(page_heading("Search", 24.).flex_none())
             .child(input)
             .child(
                 glyph_button("On-screen keyboard", "\u{e765}").on_click(cx.listener(
@@ -701,7 +767,7 @@ impl Library {
                         .items_center()
                         .gap_3()
                         .py_2()
-                        .child(title("Recent searches", 18.))
+                        .child(section_heading("Recent searches", 18.))
                         .child(
                             pill("clear-searches", "Clear history", None, false)
                                 .h(px(26.))
@@ -728,9 +794,37 @@ impl Library {
                 }
                 body = body.child(chips);
             }
-        } else if self.state.search.groups.is_empty() {
-            body = body.child(self.empty("No matching titles or people."));
         } else {
+            let state = &self.state.search;
+            if self.search_pending() {
+                let status = if state.groups.is_empty() {
+                    "Searching Jellyfin…"
+                } else {
+                    "Searching more servers…"
+                };
+                body = body.child(
+                    label(status, 14., MUTED)
+                        .relative()
+                        .py_2()
+                        .children(accessibility::status(status)),
+                );
+            } else if state.groups.is_empty() && state.failures.is_empty() {
+                body = body.child(self.empty("No matching titles or people."));
+            }
+            if !state.failures.is_empty() {
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .py_2()
+                        .child(label(state.failures.join(" "), 14., MUTED).flex_1())
+                        .child(
+                            pill("retry-search", "Retry search", Some(REFRESH), false)
+                                .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
+                        ),
+                );
+            }
             if let Some(best) = &self.state.search.best {
                 body = body.child(self.best_match(best, w, cx));
             }
@@ -742,7 +836,7 @@ impl Library {
                     .gap_2()
                     .pt_2()
                     .pb_1()
-                    .child(title(group.kind.label(), 19.))
+                    .child(section_heading(group.heading(state.federated), 19.))
                     .child(label(group.page.total_record_count.to_string(), 12., MUTED))
                     .child(div().flex_1());
                 let visible = group.visible(layout.columns);

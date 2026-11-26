@@ -7,6 +7,15 @@ impl Account {
     }
 }
 
+impl Server {
+    pub fn identify_items(&self, items: &mut [Item]) {
+        let origin = self.identity().map(Account::key);
+        for item in items {
+            item.origin.clone_from(&origin);
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HomeFeed {
     Resume,
@@ -36,12 +45,17 @@ impl HomeFeed {
 pub fn home_shelves<'a>(
     sources: impl Iterator<Item = [&'a [Item]; 4]>,
     federated: bool,
+    include_watching: impl Fn(&Item) -> bool,
 ) -> Vec<Shelf> {
     let mut watching = Vec::new();
     let mut shows = Vec::new();
     let mut films = Vec::new();
     for [resume, next, tv, movies] in sources {
-        watching.extend(catalog::continue_watching(resume.to_vec(), next.to_vec()));
+        watching.extend(
+            catalog::continue_watching(resume.to_vec(), next.to_vec())
+                .into_iter()
+                .filter(&include_watching),
+        );
         shows.extend_from_slice(tv);
         films.extend_from_slice(movies);
     }
@@ -151,13 +165,13 @@ impl SearchGroup {
         }
     }
 
-    pub fn search(
+    pub fn on_server(
         self,
-        servers: &[Server],
+        server: &Server,
         term: &str,
         offset: usize,
         limit: usize,
-    ) -> Result<(Page, Vec<String>)> {
+    ) -> Result<Page> {
         let kinds = match self {
             Self::Movies => "Movie",
             Self::Shows => "Series",
@@ -166,9 +180,9 @@ impl SearchGroup {
             Self::Music => "MusicAlbum,MusicArtist,Audio",
             Self::Videos => "Video,MusicVideo",
         };
-        combined_page_limit(servers, offset, limit, |server, start| {
-            server.search_group(kinds, term, start, limit)
-        })
+        let mut page = server.search_group(kinds, term, offset, limit)?;
+        server.identify_items(&mut page.items);
+        Ok(page)
     }
 }
 

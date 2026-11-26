@@ -13,7 +13,7 @@ impl Library {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(title("Now Playing", 23.))
+                    .child(page_heading("Now Playing", 23.))
                     .child(
                         pill("minimize-music", "Back to library", Some(BACK), false).on_click(
                             cx.listener(|s, _, _, cx| {

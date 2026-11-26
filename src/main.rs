@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
             let bounds = Bounds::centered(None, size(px(1080.), px(720.)), cx);
             cx.open_window(
                 WindowOptions {
+                    show: false,
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(650.), px(460.))),
                     titlebar: Some(TitlebarOptions {
@@ -70,7 +71,9 @@ fn main() -> anyhow::Result<()> {
                     cx.new(|cx| Root::new(library, window, cx))
                 },
             )
-            .expect("opening the RustyFin window");
+            .expect("opening the RustyFin window")
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("showing the RustyFin window");
             cx.activate(true);
         });
     Ok(())

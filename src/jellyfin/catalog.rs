@@ -141,7 +141,7 @@ impl Item {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShelfKind {
     Continue,
     RecentTv,
@@ -149,6 +149,8 @@ pub enum ShelfKind {
 }
 
 impl ShelfKind {
+    pub const ALL: [Self; 3] = [Self::Continue, Self::RecentTv, Self::RecentMovies];
+
     pub fn title(self) -> &'static str {
         match self {
             Self::Continue => "Continue Watching",
@@ -509,7 +511,7 @@ impl Server {
 
     pub fn series_target(&self, series: &str) -> Result<Option<Item>> {
         let user = self.user_id()?;
-        let resume: Page = read(self.get(&["UserItems", "Resume"]).query(&[
+        let mut resume: Page = read(self.get(&["UserItems", "Resume"]).query(&[
             ("userId", user),
             ("parentId", series),
             ("includeItemTypes", "Episode"),
@@ -517,6 +519,7 @@ impl Server {
             ("fields", FIELDS),
             ("limit", "12"),
         ]))?;
+        self.identify_items(&mut resume.items);
         let from_series = |item: &Item| item.series_id.as_deref() == Some(series);
         let resumed = continue_watching(
             resume.items.into_iter().filter(from_series).collect(),
@@ -525,12 +528,13 @@ impl Server {
         if let Some(episode) = resumed.into_iter().next() {
             return Ok(Some(episode));
         }
-        let next: Page = read(self.get(&["Shows", "NextUp"]).query(&[
+        let mut next: Page = read(self.get(&["Shows", "NextUp"]).query(&[
             ("userId", user),
             ("seriesId", series),
             ("fields", FIELDS),
             ("limit", "1"),
         ]))?;
+        self.identify_items(&mut next.items);
         Ok(
             continue_watching(vec![], next.items.into_iter().filter(from_series).collect())
                 .into_iter()
@@ -572,6 +576,7 @@ impl Server {
             let last = page.items.is_empty();
             items.extend(page.items);
             if last || items.len() >= page.total_record_count {
+                self.identify_items(&mut items);
                 return Ok(items);
             }
         }
@@ -635,7 +640,9 @@ impl Server {
             ("startIndex", &offset.to_string()),
             ("limit", &PAGE_SIZE.to_string()),
         ]);
-        read(request)
+        let mut page: Page = read(request)?;
+        self.identify_items(&mut page.items);
+        Ok(page)
     }
 
     pub fn match_tmdb(&self, name: &str, id: u64, movie: bool) -> Result<Vec<Item>> {
@@ -753,14 +760,16 @@ impl Server {
         if shuffle {
             items.shuffle(&mut rand::rng());
         }
+        self.identify_items(&mut items);
         Ok(items)
     }
 
     pub fn instant_mix(&self, id: &str) -> Result<Vec<Item>> {
-        let page: Page = read(
+        let mut page: Page = read(
             self.get(&["Items", id, "InstantMix"])
                 .query(&[("userId", self.user_id()?), ("limit", "100")]),
         )?;
+        self.identify_items(&mut page.items);
         Ok(page.items.into_iter().filter(Item::playable).collect())
     }
     pub fn artwork(&self, art: &Art) -> Result<Vec<u8>> {

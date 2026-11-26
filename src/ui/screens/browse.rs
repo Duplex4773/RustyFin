@@ -1,5 +1,5 @@
 use super::*;
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::PopupMenu;
 
 const VIEWS: [(Tab, &str); 4] = [
     (Tab::Recommended, "Recommended"),
@@ -62,7 +62,7 @@ impl Library {
                 for (value, label) in options.clone() {
                     let owner = owner.clone();
                     let checked = value == selected;
-                    menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(
+                    menu = menu.item(accessibility::menu_item(label).checked(checked).on_click(
                         move |_, w, cx| {
                             cx.stop_propagation();
                             if !checked {
@@ -193,7 +193,7 @@ impl Library {
             .items_center()
             .gap_2()
             .child(
-                title(heading.to_owned(), if compact { 18. } else { 22. })
+                page_heading(heading.to_owned(), if compact { 18. } else { 22. })
                     .min_w_0()
                     .truncate(),
             )

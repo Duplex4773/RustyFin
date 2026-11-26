@@ -36,7 +36,7 @@ impl Library {
         if !enabled {
             return button.opacity(0.48);
         }
-        button
+        accessibility::button(button, direction.label(), None, false)
             .focusable()
             .tab_stop(true)
             .cursor_pointer()

@@ -10,7 +10,7 @@ fn section(text: &str) -> Div {
         .flex_col()
         .gap_2()
         .py_2()
-        .child(title(text.to_owned(), 17.))
+        .child(section_heading(text.to_owned(), 17.))
 }
 fn choice(id: impl Into<ElementId>, text: impl Into<SharedString>, active: bool) -> Stateful<Div> {
     pill(id, text, None, active).h(px(30.)).px_3()
@@ -192,16 +192,17 @@ impl Library {
             return self.credit_cards(item, w, cx);
         }
         let mut view = div().px_5();
-        if !self.state.extras.is_empty() {
+        let notice = self.extras_notice(cx);
+        if self.state.extra_items().next().is_some() || notice.is_some() {
             let mut group = choices();
-            for (i, extra) in self.state.extras.iter().enumerate() {
+            for (i, extra) in self.state.extra_items().enumerate() {
                 let extra = extra.clone();
                 group =
                     group.child(choice(("extra", i), extra.name.clone(), false).on_click(
                         cx.listener(move |s, _, w, cx| s.open_item(extra.clone(), w, cx)),
                     ));
             }
-            view = view.child(section("Trailers and extras").child(group));
+            view = view.child(section("Trailers and extras").children(notice).child(group));
         }
         if let Some(people) = &item.people
             && !people.is_empty()

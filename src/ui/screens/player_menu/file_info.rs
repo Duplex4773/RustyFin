@@ -156,7 +156,7 @@ fn section(name: impl Into<SharedString>, glyph: &'static str) -> Div {
                 .gap_2()
                 .items_center()
                 .child(icon(glyph, 16.).text_color(rgb(SECONDARY)))
-                .child(title(name, 15.)),
+                .child(section_heading(name, 15.)),
         )
 }
 

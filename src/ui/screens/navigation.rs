@@ -2,7 +2,7 @@ use super::*;
 use gpui_component::{
     Selectable,
     button::{Button, ButtonVariants},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::DropdownMenu,
 };
 
 #[derive(Clone)]
@@ -75,8 +75,13 @@ impl Link {
                         .child(self.name.clone()),
                 )
             });
-        tip(button, self.name.clone())
-            .on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
+        let button = tip(button, self.name.clone());
+        let button = if matches!(self.screen, Screen::Search(_)) {
+            button
+        } else {
+            accessibility::keyboard_focus(button, cx)
+        };
+        button.on_click(cx.listener(move |s, _, w, cx| s.navigate(target.clone(), w, cx)))
     }
 }
 
@@ -181,7 +186,7 @@ impl Library {
             .border_1()
             .border_color(Hsla::from(fill.blend(rgba(0xffffff46))).opacity(0.64))
             .child(
-                tip(home, "Home")
+                accessibility::keyboard_focus(tip(home, "Home"), cx)
                     .on_click(cx.listener(|s, _, w, cx| s.navigate(Screen::Discover, w, cx))),
             );
         let mut overflow = Vec::new();
@@ -239,7 +244,7 @@ impl Library {
         let active = overflow.iter().any(|link| link.active);
         let owner = cx.weak_entity();
         bar = bar
-            .child(
+            .child(accessibility::named_element(
                 Button::new("more-navigation")
                     .ghost()
                     .label("More ▾")
@@ -255,7 +260,7 @@ impl Library {
                             let target = link.screen.clone();
                             let owner = owner.clone();
                             menu = menu.item(
-                                PopupMenuItem::new(link.name.clone())
+                                accessibility::menu_item(link.name.clone())
                                     .checked(link.active)
                                     .on_click(move |_, w, cx| {
                                         let _ = owner
@@ -265,7 +270,8 @@ impl Library {
                         }
                         menu
                     }),
-            )
+                "More navigation",
+            ))
             .child(div().flex_1());
         for link in [
             Link::new(
@@ -296,7 +302,7 @@ impl Library {
             bar = bar.child(
                 link.button(link.glyph.into(), 36., false, cx)
                     .when(matches!(link.screen, Screen::Search(_)), |b| {
-                        b.track_focus(&self.search_link_focus)
+                        accessibility::focus(b, &self.search_link_focus)
                     }),
             );
         }

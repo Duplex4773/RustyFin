@@ -147,7 +147,17 @@ fn action(
     name: impl Into<SharedString>,
     glyph: Option<&'static str>,
 ) -> Stateful<Div> {
-    line()
+    action_row(id, name, glyph, None)
+}
+
+fn action_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    glyph: Option<&'static str>,
+    state: Option<bool>,
+) -> Stateful<Div> {
+    let name = name.into();
+    let button = line()
         .id(id)
         .focusable()
         .tab_stop(true)
@@ -160,7 +170,11 @@ fn action(
         .when_some(glyph, |d, g| {
             d.child(icon(g, 17.).text_color(rgb(SECONDARY)))
         })
-        .child(label(name, 15., TEXT).min_w_0().flex_1().truncate())
+        .child(label(name.clone(), 15., TEXT).min_w_0().flex_1().truncate());
+    match state {
+        Some(on) => accessibility::switch(button.child(switch(on)), name, on),
+        None => accessibility::button(button, name, None, false),
+    }
 }
 
 fn unavailable_shader_row(
@@ -288,12 +302,12 @@ impl Library {
             );
         }
         rows.push(
-            action(
+            action_row(
                 "performance-overlay",
                 "Performance overlay",
                 Some("\u{e9d9}"),
+                Some(p.performance.enabled),
             )
-            .child(switch(p.performance.enabled))
             .on_click(cx.listener(|s, _, _, cx| {
                 if let Some(player) = &mut s.player {
                     let enabled = !player.performance.enabled;
@@ -340,13 +354,17 @@ impl Library {
             );
         }
         rows.push(
-            action("autoplay-next", "Auto-Play Next", Some("\u{e893}"))
-                .child(switch(self.prefs.autoplay))
-                .on_click(cx.listener(|s, _, _, cx| {
-                    s.prefs.autoplay = !s.prefs.autoplay;
-                    s.save_preferences(cx);
-                }))
-                .into_any_element(),
+            action_row(
+                "autoplay-next",
+                "Auto-Play Next",
+                Some("\u{e893}"),
+                Some(self.prefs.autoplay),
+            )
+            .on_click(cx.listener(|s, _, _, cx| {
+                s.prefs.autoplay = !s.prefs.autoplay;
+                s.save_preferences(cx);
+            }))
+            .into_any_element(),
         );
         if let Some(source) = self.current_source()
             && self.downloads.playing.is_none()
@@ -426,7 +444,7 @@ impl Library {
 
     fn initial_menu_button(&self, button: Stateful<Div>) -> Stateful<Div> {
         self.menu_focus.selected.set(true);
-        button.track_focus(&self.menu_focus.current)
+        accessibility::focus(button, &self.menu_focus.current)
     }
 
     fn track_rows(&self, page: PlayerMenu, p: &Player, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -770,19 +788,23 @@ impl Library {
         let rtx_selected = current == &Shader::RtxVsr;
         let rtx_label = Shader::RtxVsr.label().to_owned();
         let rtx_row = match p.rtx_support() {
-            Ok(()) => action("rtx-video-super-resolution", rtx_label, None)
-                .when(rtx_selected, |d| self.initial_menu_button(d))
-                .child(switch(rtx_selected))
-                .on_click(cx.listener(move |s, _, _, cx| {
-                    s.select_shader(
-                        if rtx_selected {
-                            Shader::Off
-                        } else {
-                            Shader::RtxVsr
-                        },
-                        cx,
-                    );
-                })),
+            Ok(()) => action_row(
+                "rtx-video-super-resolution",
+                rtx_label,
+                None,
+                Some(rtx_selected),
+            )
+            .when(rtx_selected, |d| self.initial_menu_button(d))
+            .on_click(cx.listener(move |s, _, _, cx| {
+                s.select_shader(
+                    if rtx_selected {
+                        Shader::Off
+                    } else {
+                        Shader::RtxVsr
+                    },
+                    cx,
+                );
+            })),
             Err(reason) => unavailable_shader_row("rtx-video-super-resolution", rtx_label, reason),
         };
         let mut rows = vec![rtx_row.into_any_element()];
@@ -896,7 +918,7 @@ impl Library {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(title(page.title(), 18.))
+                    .child(section_heading(page.title(), 18.))
                     .when_some(
                         self.playing
                             .as_ref()

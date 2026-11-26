@@ -97,22 +97,37 @@ impl Library {
         if !matches!(self.state.screen, Screen::Settings(_)) {
             return button;
         }
+        self.page_button(button, cx)
+    }
+
+    pub(super) fn page_button(&self, button: Stateful<Div>, cx: &App) -> Stateful<Div> {
         let nav = &self.state.settings_nav;
-        let id = Element::id(&button).expect("settings controls have stable IDs");
+        let id = Element::id(&button).expect("page controls have stable IDs");
         let handle = nav
             .handles
             .borrow_mut()
             .entry(id)
             .or_insert_with(|| cx.focus_handle())
             .clone();
-        button
+        accessibility::focus(button, &handle)
             .relative()
-            .track_focus(&handle)
             .child(nav.marker(&handle))
     }
 
-    pub(super) fn settings_input(&self, input: &Entity<InputState>, cx: &App) -> Div {
-        let field = div().w_full().relative().child(Input::new(input));
+    pub(super) fn focus_page_button(&self, id: impl Into<ElementId>, w: &mut Window) {
+        if let Some(handle) = self.state.settings_nav.handles.borrow().get(&id.into()) {
+            handle.focus(w);
+        }
+    }
+
+    pub(super) fn settings_input(
+        &self,
+        input: &Entity<InputState>,
+        name: &'static str,
+        masked: bool,
+        cx: &App,
+    ) -> Div {
+        let field = accessibility::field(Input::new(input), input, name, masked, cx);
         field.when(matches!(self.state.screen, Screen::Settings(_)), |d| {
             d.child(
                 self.state
@@ -128,13 +143,20 @@ impl Library {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(self.state.screen, Screen::Settings(_))
-            || !matches!(key, "up" | "down" | "left" | "right")
-        {
+        if !matches!(key, "up" | "down" | "left" | "right") {
+            return false;
+        }
+        let discover = matches!(self.state.screen, Screen::Discover)
+            && self.popup_menu.is_none()
+            && !self.navigation_focus.contains_focused(w, cx);
+        if !discover && !matches!(self.state.screen, Screen::Settings(_)) {
             return false;
         }
         let painted = self.state.settings_nav.painted.borrow();
         let current = painted.iter().find(|(h, _)| h.is_focused(w));
+        if discover && current.is_none() && (key != "up" || self.state.shelf.is_some()) {
+            return false;
+        }
         let target = match current {
             // Subpages start with a Back arrow above the first setting.
             None if matches!(self.state.screen, Screen::Settings(page) if page != SettingsPage::Overview) => {
@@ -165,6 +187,8 @@ impl Library {
                 offset.x,
                 (offset.y + delta).clamp(-scroll.max_offset().height, px(0.)),
             ));
+        } else if discover && key == "down" {
+            return false;
         } else if key == "up" && current.is_some() {
             self.navigation_focus.focus(w);
             w.focus_next();

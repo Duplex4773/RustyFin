@@ -53,7 +53,7 @@ impl Library {
                         glyph_button("Back to channels", BACK)
                             .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
                     )
-                    .child(title(channel.name.clone(), 21.))
+                    .child(section_heading(channel.name.clone(), 21.))
                     .child(pill("tune", "Watch live", Some(PLAY), true).on_click(
                         cx.listener(move |s, _, w, cx| s.play_item(target.clone(), w, cx)),
                     )),
@@ -149,6 +149,10 @@ impl Library {
                             continue;
                         }
                         let id = item.id.clone();
+                        let origin = match &self.state.screen {
+                            Screen::Guide(channel) => channel.origin.clone(),
+                            _ => item.origin.clone(),
+                        };
                         row = row.child(
                             pill(
                                 (if series { "record-series" } else { "record" }, i),
@@ -161,7 +165,7 @@ impl Library {
                                     if s.busy {
                                         return;
                                     }
-                                    if let Some(server) = s.server.clone() {
+                                    if let Some(server) = s.source_server(origin.as_deref()) {
                                         let id = id.clone();
                                         s.work(
                                             w,
@@ -217,9 +221,7 @@ impl Library {
                     let channel = item.clone();
                     row = row.child(pill(("guide", i), "Guide", None, false).on_click(
                         cx.listener(move |s, _, w, cx| {
-                            if s.adopt_server(&channel, w, cx) {
-                                s.navigate(Screen::Guide(Box::new(channel.clone())), w, cx)
-                            }
+                            s.navigate(Screen::Guide(Box::new(channel.clone())), w, cx)
                         }),
                     ));
                     let id = item.id.clone();
@@ -271,7 +273,7 @@ impl Library {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(title("Live TV", 26.))
+                    .child(page_heading("Live TV", 26.))
                     .child(tabs),
             )
             .child(list)

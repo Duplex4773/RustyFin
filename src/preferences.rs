@@ -1,3 +1,4 @@
+use crate::jellyfin::ShelfKind;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -158,6 +159,7 @@ pub struct Preferences {
     pub windows_dolby: bool,
     pub mel_to_81: bool,
     pub shortcuts: std::collections::BTreeMap<String, String>,
+    pub home: HomePreferences,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -177,8 +179,72 @@ impl Default for Preferences {
             windows_dolby: true,
             mel_to_81: true,
             shortcuts: Default::default(),
+            home: Default::default(),
         }
     }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomePreferences {
+    pub layout: HomeLayout,
+    pub dismissed: Vec<DismissedTitle>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomeLayout {
+    pub shelves: Vec<ShelfKind>,
+    pub hidden: Vec<ShelfKind>,
+    pub pin_favourites: bool,
+    pub pinned_libraries: Vec<String>,
+}
+
+impl Default for HomeLayout {
+    fn default() -> Self {
+        Self {
+            shelves: ShelfKind::ALL.to_vec(),
+            hidden: Vec::new(),
+            pin_favourites: false,
+            pinned_libraries: Vec::new(),
+        }
+    }
+}
+
+impl HomeLayout {
+    pub fn shelf_order(&self) -> Vec<ShelfKind> {
+        let mut shelves = Vec::with_capacity(ShelfKind::ALL.len());
+        for kind in self.shelves.iter().copied().chain(ShelfKind::ALL) {
+            if !shelves.contains(&kind) {
+                shelves.push(kind);
+            }
+        }
+        shelves
+    }
+
+    pub fn move_shelf(&mut self, kind: ShelfKind, direction: isize) {
+        let mut order = self.shelf_order();
+        let index = order.iter().position(|&shelf| shelf == kind).unwrap();
+        if let Some(target) = index
+            .checked_add_signed(direction)
+            .filter(|&i| i < order.len())
+        {
+            order.swap(index, target);
+            self.shelves = order;
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DismissedTitle {
+    pub name: String,
+    pub copies: Vec<ResumeKey>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeKey {
+    pub account: String,
+    pub title: String,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PosterSize {

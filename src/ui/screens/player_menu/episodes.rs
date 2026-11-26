@@ -151,7 +151,7 @@ impl Library {
                                 ),
                         )
                     });
-                div()
+                let row = div()
                     .id(("drawer-episode", i))
                     .focusable()
                     .tab_stop(true)
@@ -198,7 +198,8 @@ impl Library {
                     )
                     .when_some(synopsis.map(str::to_owned), |d, text| {
                         d.tooltip(move |w, cx| Tooltip::new(text.clone()).build(w, cx))
-                    })
+                    });
+                accessibility::title_button(row, item, None, false)
                     .on_click(cx.listener(move |s, _, w, cx| s.play_drawer_episode(i, w, cx)))
                     .into_any_element()
             })

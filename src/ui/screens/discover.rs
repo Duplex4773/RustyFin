@@ -5,12 +5,22 @@ const GUTTER: f32 = 32.;
 const GAP: f32 = 12.;
 const CHARCOAL: u32 = 0x101413;
 const GLASS_INSET: f32 = 14.;
+const PIN_WASH_SPAN: f32 = 0.08;
 
-fn wash_start(kind: Option<ShelfKind>) -> f32 {
-    match kind {
-        Some(ShelfKind::Continue) => 0.42,
-        Some(ShelfKind::RecentTv) => 0.74,
-        Some(ShelfKind::RecentMovies) | None => 1.,
+fn wash_start(shelves: &[Shelf], row: usize) -> f32 {
+    let Some(visible) = shelves.get(..=row) else {
+        return 1.;
+    };
+    if visible
+        .iter()
+        .any(|shelf| shelf.kind == ShelfKind::RecentMovies)
+    {
+        return 1.;
+    }
+    match (visible[0].kind, row) {
+        (ShelfKind::Continue, 0) => 0.42,
+        (ShelfKind::Continue, _) | (_, 0) => 0.74,
+        _ => 0.90,
     }
 }
 
@@ -181,6 +191,16 @@ fn circle(
 }
 
 impl Library {
+    fn customise_home_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.page_button(
+            pill("customise-home", "Customise Home", Some("\u{e713}"), false).bg(rgba(0x181d1bea)),
+            cx,
+        )
+        .on_click(cx.listener(|s, _, w, cx| {
+            s.navigate(Screen::Settings(SettingsPage::Home), w, cx);
+        }))
+    }
+
     pub(in crate::ui) fn activate_home_item(
         &mut self,
         kind: ShelfKind,
@@ -377,7 +397,7 @@ impl Library {
             .child(controls)
     }
 
-    fn marquee(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
+    fn marquee(&self, item: &Item, wash_end: f32, w: &Window, cx: &mut Context<Self>) -> Div {
         let banner = marquee_size(w);
         let width = f32::from(banner.width);
         let height = f32::from(banner.height);
@@ -407,8 +427,9 @@ impl Library {
             .flex()
             .items_center()
             .gap_2()
-            .child(title("Discover", 22.))
+            .child(page_heading("Discover", 22.))
             .child(div().flex_1())
+            .child(self.customise_home_button(cx))
             .child(
                 artwork_control(glyph_button("Refresh", REFRESH))
                     .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
@@ -487,11 +508,7 @@ impl Library {
                     .bottom_0()
                     .left_0()
                     .right_0()
-                    .child(
-                        self.artwork
-                            .glass
-                            .wash(0., wash_start(self.shelves.first().map(|s| s.kind))),
-                    ),
+                    .child(self.artwork.glass.wash(0., wash_end)),
             )
             .child(toolbar)
             .child(copy)
@@ -501,6 +518,7 @@ impl Library {
     }
 
     pub(super) fn discover(&mut self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
+        self.state.settings_nav.begin_layout();
         let mut scroll = div()
             .id("discover-scroll")
             .track_scroll(&self.state.scroll)
@@ -510,14 +528,29 @@ impl Library {
             .bg(rgb(CHARCOAL));
         scroll.style().restrict_scroll_to_axis = Some(true);
         let mut header = div().w_full();
+        let pins = self.home_shortcuts(cx);
         let unavailable = self.home.unavailable();
         if let Some(item) = self.featured.get(self.hero) {
-            header = header.child(self.marquee(item, w, cx));
+            let wash = wash_start(&self.shelves, 0);
+            let wash_end = if pins.is_some() {
+                wash - PIN_WASH_SPAN
+            } else {
+                wash
+            };
+            header = header.child(self.marquee(item, wash_end, w, cx));
         } else {
             header = header.child(
                 div()
                     .p_5()
-                    .child(title("Discover", 24.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(page_heading("Discover", 24.))
+                            .child(self.customise_home_button(cx)),
+                    )
                     .when(self.home.loading() && !unavailable, |d| {
                         d.child(label("Loading Home…", 15., MUTED).pt_3())
                     })
@@ -619,6 +652,9 @@ impl Library {
                 header = header.child(notice);
             }
         }
+        if let Some(pins) = pins {
+            header = header.child(pins);
+        }
         scroll = scroll.child(header);
         let available = f32::from(w.viewport_size().width) - 2. * GUTTER;
         for (row, shelf) in self.shelves.iter().enumerate() {
@@ -641,13 +677,20 @@ impl Library {
             let focused =
                 self.keyboard && self.focus.is_focused(w) && self.state.shelf == Some(row);
             for (i, item) in shelf.items.iter().enumerate() {
+                let selected = focused && self.state.selection == i;
                 let card = self.card(
                     item,
                     width,
                     CardLayout::Shelf(shelf.kind),
-                    focused && self.state.selection == i,
+                    selected,
                     ("home-card", row * 100 + i).into(),
                     cx,
+                );
+                let card = accessibility::poster_button(
+                    card,
+                    item,
+                    accessibility::Poster::Home { row, index: i },
+                    selected,
                 );
                 strip = strip.child(card.when(frosted, |d| {
                     d.on_hover(cx.listener(move |s, inside, _, cx| {
@@ -667,7 +710,7 @@ impl Library {
                 .items_center()
                 .justify_between()
                 .mb(px(10.))
-                .child(title(shelf.kind.title(), 26.).line_height(px(30.)));
+                .child(section_heading(shelf.kind.title(), 26.).line_height(px(30.)));
             if shelf.items.len() > columns as usize {
                 let mut arrows = div().flex().gap_2();
                 for (i, (name, code, dir)) in
@@ -690,9 +733,9 @@ impl Library {
                 heading = heading.child(arrows);
             }
             let mut section = div().relative().pt(px(if row == 0 { 16. } else { 24. }));
-            if shelf.kind != ShelfKind::RecentMovies {
-                let start = wash_start(Some(shelf.kind));
-                let end = wash_start(self.shelves.get(row + 1).map(|s| s.kind));
+            let start = wash_start(&self.shelves, row);
+            if start < 1. {
+                let end = wash_start(&self.shelves, row + 1);
                 section = section.child(self.artwork.glass.wash(start, end));
             }
             let panel = if frosted {
@@ -715,7 +758,130 @@ impl Library {
             };
             scroll = scroll.child(section.child(panel.child(heading).child(strip)));
         }
-        div().flex_1().min_w_0().min_h_0().child(scroll)
+        let mut body = div().relative().flex_1().min_w_0().min_h_0().child(scroll);
+        if let Some(removed) = &self.home_undo {
+            body =
+                body.child(
+                    div()
+                        .id("continue-undo-notice")
+                        .absolute()
+                        .bottom(px(20.))
+                        .right(px(20.))
+                        .max_w(relative(0.9))
+                        .block_mouse_except_scroll()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .p_2()
+                        .pl_3()
+                        .rounded_lg()
+                        .bg(rgb(0x1e2624))
+                        .border_1()
+                        .border_color(rgba(0xffffff2b))
+                        .shadow_lg()
+                        .child(
+                            label(
+                                format!("Removed {} from Continue Watching", removed.name),
+                                14.,
+                                TEXT,
+                            )
+                            .line_clamp(2),
+                        )
+                        .child(
+                            pill("undo-continue-removal", "Undo", None, true)
+                                .track_focus(&self.home_undo_focus)
+                                .on_key_down(cx.listener(|s, event: &KeyDownEvent, w, cx| {
+                                    // The key that confirms removal can be released after Undo gains focus.
+                                    if !event.is_held
+                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        && !event.keystroke.modifiers.modified()
+                                    {
+                                        cx.stop_propagation();
+                                        w.prevent_default();
+                                        s.undo_continue(w, cx);
+                                    }
+                                }))
+                                .on_click(cx.listener(|s, event, w, cx| {
+                                    if matches!(event, ClickEvent::Mouse(_)) {
+                                        s.undo_continue(w, cx);
+                                    }
+                                })),
+                        )
+                        .child(glyph_button("Dismiss notification", "\u{e711}").on_click(
+                            cx.listener(|s, _, w, cx| {
+                                s.focus.focus(w);
+                                s.home_undo = None;
+                                cx.notify();
+                            }),
+                        )),
+                );
+        }
+        body
+    }
+
+    fn home_shortcuts(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let layout = &self.prefs.home.layout;
+        let mut shortcuts = Vec::new();
+        if layout.pin_favourites {
+            shortcuts.push((
+                "favourites".to_owned(),
+                "Favourites".to_owned(),
+                CatalogQuery::favourites(),
+            ));
+        }
+        shortcuts.extend(
+            self.home_pin_libraries()
+                .filter(|library| layout.pinned_libraries.contains(&library.id))
+                .map(|library| {
+                    (
+                        library.id.clone(),
+                        library.name.clone(),
+                        CatalogQuery {
+                            kind: library.catalog_kind().unwrap_or("Folder"),
+                            library: Some(library.id.clone()),
+                            ..Default::default()
+                        },
+                    )
+                }),
+        );
+        if shortcuts.is_empty() {
+            return None;
+        }
+        let wash = wash_start(&self.shelves, 0);
+        Some(
+            div()
+                .relative()
+                .child(self.artwork.glass.wash(wash - PIN_WASH_SPAN, wash))
+                .child(
+                    div()
+                        .relative()
+                        .px(px(GUTTER))
+                        .py_3()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            label("Pinned shortcuts", 14., TEXT).font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .children(shortcuts.into_iter().map(|(id, name, query)| {
+                            self.page_button(
+                                pill(
+                                    SharedString::from(format!("home-pin-{id}")),
+                                    name,
+                                    None,
+                                    false,
+                                ),
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                move |s, _, w, cx| {
+                                    s.navigate(Screen::Library(Tab::Browse, query.clone()), w, cx);
+                                },
+                            ))
+                        })),
+                ),
+        )
     }
 }
 
@@ -723,12 +889,11 @@ pub(super) fn continue_menu(
     item: Item,
 ) -> impl Fn(gpui_component::menu::PopupMenu, WeakEntity<Library>) -> gpui_component::menu::PopupMenu
 + Clone {
-    use gpui_component::menu::PopupMenuItem;
     move |menu, owner| {
         let details = item.clone();
         let view = owner.clone();
         let mut menu = menu.item(
-            PopupMenuItem::new(match item.kind.as_str() {
+            accessibility::menu_item(match item.kind.as_str() {
                 "Episode" => "Episode details",
                 "Movie" => "Movie details",
                 _ => "Title details",
@@ -741,7 +906,7 @@ pub(super) fn continue_menu(
         if item.position() > 0 || item.copies.iter().any(|copy| copy.position() > 0) {
             let target = item.clone();
             let view = owner.clone();
-            menu = menu.item(PopupMenuItem::new("Play from beginning").on_click(
+            menu = menu.item(accessibility::menu_item("Play from beginning").on_click(
                 move |_, w, cx| {
                     cx.stop_propagation();
                     let _ = view.update(cx, |s, cx| {
@@ -755,7 +920,7 @@ pub(super) fn continue_menu(
             let origin = item.origin.clone();
             let view = owner.clone();
             menu = menu.item(
-                PopupMenuItem::new("Go to series").on_click(move |_, w, cx| {
+                accessibility::menu_item("Go to series").on_click(move |_, w, cx| {
                     cx.stop_propagation();
                     let _ = view.update(cx, |s, cx| {
                         let Some(server) = s.source_server(origin.as_deref()) else {
@@ -778,12 +943,20 @@ pub(super) fn continue_menu(
             );
         }
         let target = item.clone();
+        let dismissed = item.clone();
+        let view = owner.clone();
         menu.item(
-            PopupMenuItem::new("Mark watched").on_click(move |_, w, cx| {
+            accessibility::menu_item("Mark watched").on_click(move |_, w, cx| {
                 cx.stop_propagation();
-                let _ = owner.update(cx, |s, cx| {
+                let _ = view.update(cx, |s, cx| {
                     s.set_item_flag(target.clone(), false, true, w, cx)
                 });
+            }),
+        )
+        .item(
+            accessibility::menu_item("Remove from Continue Watching").on_click(move |_, w, cx| {
+                cx.stop_propagation();
+                let _ = owner.update(cx, |s, cx| s.dismiss_continue(&dismissed, w, cx));
             }),
         )
     }
