@@ -50,6 +50,7 @@ struct Bridge {
     handles: HashMap<ElementId, FocusHandle>,
     visible: HashMap<NodeId, Entry>,
     virtual_focus: Option<(NodeId, Option<FocusHandle>)>,
+    playback_focus: Option<FocusHandle>,
     last: Option<(NodeId, Vec<(NodeId, Node)>)>,
 }
 
@@ -72,6 +73,7 @@ enum Target {
     Input(Entity<InputState>),
     Seek(f64),
     Volume,
+    ShowPlaybackControls,
 }
 
 #[derive(Clone, Copy)]
@@ -86,6 +88,15 @@ fn bridge() -> Option<Rc<RefCell<Bridge>>> {
 
 pub(super) fn active() -> bool {
     bridge().is_some_and(|bridge| bridge.borrow().active)
+}
+
+pub(super) fn playback_focused(w: &Window, cx: &App, keyboard: bool) -> bool {
+    let Some(bridge) = bridge() else { return false };
+    let mut state = bridge.borrow_mut();
+    if !keyboard || !w.is_window_active() || state.playback_focus != w.focused(cx) {
+        state.playback_focus = None;
+    }
+    state.playback_focus.is_some()
 }
 
 impl Accessibility {
@@ -105,6 +116,7 @@ impl Accessibility {
             handles: HashMap::new(),
             visible: HashMap::new(),
             virtual_focus: None,
+            playback_focus: None,
             last: None,
         }));
         let weak = Rc::downgrade(&bridge);
@@ -126,38 +138,59 @@ impl Accessibility {
                                     if let Some(focus) = &entry.focus {
                                         focus.focus(w);
                                     }
-                                    let _ = view.update(cx, |s, cx| {
-                                        if let Target::Poster(poster) = entry.target {
-                                            match poster {
-                                                Poster::Browse(index)
-                                                    if matches!(
-                                                        s.state.screen,
-                                                        super::Screen::Library(..)
-                                                    ) =>
-                                                {
-                                                    s.state.selection = index;
+                                    let playback = view
+                                        .update(cx, |s, cx| {
+                                            if let Target::Poster(poster) = entry.target {
+                                                match poster {
+                                                    Poster::Browse(index)
+                                                        if matches!(
+                                                            s.state.screen,
+                                                            super::Screen::Library(..)
+                                                        ) =>
+                                                    {
+                                                        s.state.selection = index;
+                                                    }
+                                                    Poster::Home { row, index }
+                                                        if matches!(
+                                                            s.state.screen,
+                                                            super::Screen::Discover
+                                                        ) =>
+                                                    {
+                                                        s.state.shelf = Some(row);
+                                                        s.state.selection = index;
+                                                    }
+                                                    _ => return false,
                                                 }
-                                                Poster::Home { row, index }
-                                                    if matches!(
-                                                        s.state.screen,
-                                                        super::Screen::Discover
-                                                    ) =>
-                                                {
-                                                    s.state.shelf = Some(row);
-                                                    s.state.selection = index;
-                                                }
-                                                _ => return,
+                                                s.keyboard = true;
+                                                s.focus.focus(w);
                                             }
-                                            s.keyboard = true;
-                                            s.focus.focus(w);
-                                        }
-                                        if let Some(player) = &mut s.player {
-                                            player.use_keyboard_controls();
-                                        }
-                                        cx.notify();
+                                            let player = s.player.as_mut().filter(|_| {
+                                                !s.controls.mini
+                                                    && !matches!(
+                                                        entry.target,
+                                                        Target::ShowPlaybackControls
+                                                    )
+                                            });
+                                            let playback = player.is_some();
+                                            if let Some(player) = player {
+                                                player.use_keyboard_controls();
+                                            }
+                                            cx.notify();
+                                            playback
+                                        })
+                                        .unwrap_or(false);
+                                    let focus = w.focused(cx);
+                                    let mut state = bridge.borrow_mut();
+                                    state.virtual_focus = Some((entry.id, focus.clone()));
+                                    state.playback_focus = focus.filter(|_| playback);
+                                }
+                                Action::Click
+                                    if matches!(entry.target, Target::ShowPlaybackControls) =>
+                                {
+                                    let _ = view.update(cx, |s, cx| {
+                                        s.step_player_focus(true, w, cx);
                                     });
-                                    bridge.borrow_mut().virtual_focus =
-                                        Some((entry.id, w.focused(cx)));
+                                    bridge.borrow_mut().playback_focus = w.focused(cx);
                                 }
                                 Action::Click
                                     if matches!(
@@ -561,6 +594,17 @@ pub(super) fn status(text: &str) -> Option<impl IntoElement> {
         node.set_value(text);
         node.set_live(Live::Polite);
         marker("live-status".into(), node, None, Target::None, false)
+    })
+}
+
+pub(super) fn show_playback_controls() -> Option<impl IntoElement> {
+    active().then(|| {
+        let name = "Show playback controls";
+        let mut node = Node::new(Role::Button);
+        node.set_label(name);
+        node.add_action(Action::Focus);
+        node.add_action(Action::Click);
+        marker(name.into(), node, None, Target::ShowPlaybackControls, false)
     })
 }
 

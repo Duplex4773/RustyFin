@@ -1403,7 +1403,7 @@ impl Render for Library {
             .filter(|_| !self.controls.mini)
             .map(|p| {
                 let rail_focused = p.keyboard_controls() && self.menu_focus.timeline.is_focused(w);
-                let interacting = accessibility::active()
+                let interacting = accessibility::playback_focused(w, cx, p.keyboard_controls())
                     || self.scrub.is_some()
                     || self.controls.hover.is_some()
                     || self.controls.volume_hovered

@@ -2,6 +2,11 @@
 
 Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
+## 2026-11-27 - Dolby Vision playback controls
+
+- Fixed playback controls staying visible when an accessibility client was connected. The controls now fade after inactivity in windowed and fullscreen playback, including Dolby Vision Profile 8 through the Windows renderer.
+- Narrator users can select **Show playback controls** to bring back the overlay and move focus to Play or Pause.
+
 ## 2026-11-26 - Narrator headings, per-server Search and independent trailers
 
 - Discover, Search, Browse, title details and settings expose headings with native Windows UI Automation levels. Settings and player switches report their on/off state and can be toggled using assistive technology.

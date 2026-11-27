@@ -834,13 +834,18 @@ impl Library {
             root = root.bg(rgb(BG)).child(self.now_playing(p, cx));
         } else {
             root = root.child(div().flex_1()).child(
-                div().id("video-surface").absolute().inset_0().on_click(
-                    |event: &ClickEvent, w, _| {
+                div()
+                    .id("video-surface")
+                    .absolute()
+                    .inset_0()
+                    .when(!show_bar, |d| {
+                        d.children(accessibility::show_playback_controls())
+                    })
+                    .on_click(|event: &ClickEvent, w, _| {
                         if event.click_count() == 2 {
                             w.toggle_fullscreen();
                         }
-                    },
-                ),
+                    }),
             );
             if show_bar {
                 root = root.child(self.playback_title(p, width, cx).opacity(chrome_opacity));
