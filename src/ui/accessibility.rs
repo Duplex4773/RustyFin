@@ -521,17 +521,6 @@ pub(super) fn keyboard_focus(control: Stateful<Div>, cx: &App) -> Stateful<Div> 
     focus(control, &handle)
 }
 
-pub(super) fn named_element(child: impl IntoElement, name: &'static str) -> Div {
-    let mut view = div().relative().child(child);
-    if active() {
-        let mut node = Node::new(Role::Button);
-        node.set_label(name);
-        node.add_action(Action::Click);
-        view = view.child(marker(name.into(), node, None, Target::Button, false));
-    }
-    view
-}
-
 pub(super) fn menu_item(name: impl Into<SharedString>) -> gpui_component::menu::PopupMenuItem {
     let name = name.into();
     gpui_component::menu::PopupMenuItem::element(move |_, _| {

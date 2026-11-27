@@ -49,30 +49,29 @@ fn capsule() -> Div {
         .border_color(rgba(0xffffff50))
 }
 
-// Limit the contrast treatment to the individual glyphs so the picture stays
-// visible behind the title and the two clocks even on bright frames.
-fn overlay_text(text: String, size: f32, weight: FontWeight) -> Div {
+// Outline the glyphs so the picture remains visible behind the text.
+fn outlined_text(text: String, style: impl Fn(Div) -> Div) -> Div {
     let text: SharedString = text.into();
-    let mut view = div()
-        .relative()
-        .min_w_0()
-        .max_w_full()
-        .font_weight(weight)
-        .text_size(px(size))
-        .line_height(px(size + 5.));
+    let mut view = div().relative().min_w_0().max_w_full();
     for (x, y) in [(-1., 0.), (1., 0.), (0., -1.), (0., 1.)] {
-        view = view.child(
+        view = view.child(style(
             div()
                 .absolute()
                 .left(px(x))
                 .top(px(y))
                 .w_full()
-                .truncate()
                 .text_color(rgba(0x080a0cc0))
                 .child(text.clone()),
-        );
+        ));
     }
-    view.child(div().truncate().text_color(rgb(0xffffff)).child(text))
+    view.child(style(div().text_color(rgb(0xffffff)).child(text)))
+}
+
+fn overlay_text(text: String, size: f32, weight: FontWeight) -> Div {
+    outlined_text(text, |d| d.truncate())
+        .font_weight(weight)
+        .text_size(px(size))
+        .line_height(px(size + 5.))
 }
 
 impl Library {
@@ -120,6 +119,7 @@ impl Library {
         {
             self.close_player_menu(w, cx);
         } else {
+            let already_open = p.panel_open;
             p.panel_open = true;
             p.wake_controls();
             self.end_preview();
@@ -129,6 +129,9 @@ impl Library {
                 self.controls.episodes = Default::default();
             }
             self.enter_player_menu(page, cx);
+            if !already_open {
+                self.controls.menu_page_motion = None;
+            }
             if page == PlayerMenu::Episodes {
                 self.load_episode_drawer(w, cx);
             }
@@ -138,6 +141,11 @@ impl Library {
     pub(in crate::ui) fn enter_player_menu(&mut self, page: PlayerMenu, cx: &mut Context<Self>) {
         if self.controls.menu != page {
             self.menu_focus.scroll.set_offset(Point::default());
+            let back = page == PlayerMenu::Settings
+                || (page == PlayerMenu::Episodes
+                    && self.controls.menu == PlayerMenu::EpisodeSeasons);
+            self.controls.menu_page_motion = scrolling::animations_enabled()
+                .then(|| (Instant::now(), if back { -1. } else { 1. }));
         }
         self.controls.menu = page;
         self.menu_focus.entering.set(true);
@@ -149,6 +157,7 @@ impl Library {
             p.panel_open = false;
             p.keyboard_controls()
         });
+        self.controls.menu_page_motion = None;
         if self.controls.menu.episode_drawer() {
             self.controls.episodes = Default::default();
         }
@@ -192,8 +201,12 @@ impl Library {
             old.unwrap_or_else(|| self.menu_focus.close.clone())
                 .focus(w);
         }
-        self.menu_focus
-            .reveal(w, cx, !self.controls.warning.is_empty(), false);
+        self.menu_focus.reveal(
+            w,
+            cx,
+            !self.player_menu_notice(self.controls.menu).is_empty(),
+            false,
+        );
         cx.notify();
     }
 
@@ -809,7 +822,15 @@ impl Library {
                         paints.set(paints.get().saturating_add(1));
                     }
                     w.on_mouse_event(move |event: &MouseDownEvent, phase, w, cx| {
-                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                        let size = w.viewport_size();
+                        // GPUI also dispatches mouse events from the Windows title bar and resize frame.
+                        if phase == DispatchPhase::Capture
+                            && event.button == MouseButton::Left
+                            && event.position.x >= px(0.)
+                            && event.position.y >= px(0.)
+                            && event.position.x < size.width
+                            && event.position.y < size.height
+                        {
                             let _ = view.update(cx, |s, cx| {
                                 if let Some(player) = &mut s.player {
                                     player.use_pointer_controls();
@@ -833,6 +854,8 @@ impl Library {
         if p.audio_only {
             root = root.bg(rgb(BG)).child(self.now_playing(p, cx));
         } else {
+            // Keep the client area opaque until there is a picture beneath GPUI's overlay.
+            root = root.when(!p.status.video_presented, |d| d.bg(rgb(0)));
             root = root.child(div().flex_1()).child(
                 div()
                     .id("video-surface")
@@ -864,15 +887,13 @@ impl Library {
                     );
                     root = root.child(
                         floating(bounds)
-                            .rounded(px(6.))
-                            .bg(rgb(0))
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(
-                                label(text, self.prefs.subtitle_size as f32 * 0.8, TEXT)
-                                    .text_center()
-                                    .line_clamp(2),
+                                outlined_text(text, |d| d.text_center().line_clamp(2))
+                                    .w_full()
+                                    .text_size(px(self.prefs.subtitle_size as f32 * 0.8)),
                             ),
                     );
                 }
@@ -961,7 +982,15 @@ impl Library {
                 ),
                 size(px(panel_width), px(panel_height)),
             );
-            root = root.child(floating(bounds).occlude().child(menu));
+            root = root.child(floating(bounds).child(reveal_menu(
+                div().size_full().occlude().child(menu),
+                ("playback-menu-reveal", self.generation as usize),
+                if episodes {
+                    point(px(22.), px(0.))
+                } else {
+                    point(px(0.), px(10.))
+                },
+            )));
         } else if let Some(next) = credits {
             let card_width = (width - 2. * EDGE).clamp(1., 390.);
             let card_height = 140.;

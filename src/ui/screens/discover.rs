@@ -78,7 +78,7 @@ fn frosted_panel(texture: Div, tint: Rgba, center: f32, card_width: f32) -> Div 
 fn marquee_size(w: &Window) -> Size<Pixels> {
     let width = w.viewport_size().width;
     // Keep Continue Watching in view on short windows, and let the banner grow on a TV.
-    let viewport = w.viewport_size().height - px(NAV_HEIGHT);
+    let viewport = (w.viewport_size().height - px(NAV_HEIGHT)).max(px(0.));
     let extra = ((viewport - px(720.)) * 0.25).clamp(px(0.), viewport * 0.11);
     let height = (viewport * 0.62 + extra).clamp(px(286.), (width * 0.82).max(px(286.)));
     size(width, height + px(NAV_HEIGHT))
@@ -230,9 +230,25 @@ impl Library {
         let Some(image) = self.marquee_image(item, w) else {
             return base;
         };
+        let layer = Self::marquee_layer(image, banner);
+        if !scrolling::animations_enabled() {
+            return base.child(layer);
+        }
+        base.child(layer.with_animation(
+            SharedString::from(format!(
+                "marquee-{}-{}",
+                item.origin.as_deref().unwrap_or(""),
+                item.id
+            )),
+            Animation::new(Duration::from_millis(230)),
+            |d, t| d.opacity(0.35 + 0.65 * t),
+        ))
+    }
+
+    fn marquee_layer(image: std::sync::Arc<RenderImage>, banner: Size<Pixels>) -> Div {
         let source = image.size(0);
         let aspect = source.width.0 as f32 / source.height.0.max(1) as f32;
-        let layer = if aspect < 1.35 {
+        if aspect < 1.35 {
             // A poster can be the only available image. Keep the entire design visible.
             let fit = ObjectFit::Contain.get_bounds(Bounds::new(Point::default(), banner), source);
             div()
@@ -260,16 +276,7 @@ impl Library {
                     d.child(coat(90., 0x101413ff, 0x10141300, 0., feather))
                         .child(coat(90., 0x10141300, 0x101413ff, 1. - feather, 1.))
                 })
-        };
-        base.child(layer.with_animation(
-            SharedString::from(format!(
-                "marquee-{}-{}",
-                item.origin.as_deref().unwrap_or(""),
-                item.id
-            )),
-            Animation::new(Duration::from_millis(230)),
-            |d, t| d.opacity(0.35 + 0.65 * t),
-        ))
+        }
     }
 
     fn marquee_play(&self, item: &Item, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -497,7 +504,13 @@ impl Library {
             .flex_none()
             .overflow_hidden()
             .bg(rgb(0x101413))
-            .child(self.marquee_backdrop(item, w, banner))
+            .child(
+                div().absolute().inset_0().overflow_hidden().children(
+                    self.artwork
+                        .marquee_layers()
+                        .map(|(image, alpha)| Self::marquee_layer(image, banner).opacity(alpha)),
+                ),
+            )
             .child(coat(90., 0x070a0c65, 0x070a0c00, 0., 0.49))
             .child(coat(180., 0x07090cc4, 0x07090c00, 0., 0.16))
             .child(coat(180., 0x10141300, 0x101413ff, 0.44, 1.))
@@ -760,61 +773,67 @@ impl Library {
         }
         let mut body = div().relative().flex_1().min_w_0().min_h_0().child(scroll);
         if let Some(removed) = &self.home_undo {
-            body =
-                body.child(
-                    div()
-                        .id("continue-undo-notice")
-                        .absolute()
-                        .bottom(px(20.))
-                        .right(px(20.))
-                        .max_w(relative(0.9))
-                        .block_mouse_except_scroll()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .p_2()
-                        .pl_3()
-                        .rounded_lg()
-                        .bg(rgb(0x1e2624))
-                        .border_1()
-                        .border_color(rgba(0xffffff2b))
-                        .shadow_lg()
-                        .child(
-                            label(
-                                format!("Removed {} from Continue Watching", removed.name),
-                                14.,
-                                TEXT,
-                            )
-                            .line_clamp(2),
-                        )
-                        .child(
-                            pill("undo-continue-removal", "Undo", None, true)
-                                .track_focus(&self.home_undo_focus)
-                                .on_key_down(cx.listener(|s, event: &KeyDownEvent, w, cx| {
-                                    // The key that confirms removal can be released after Undo gains focus.
-                                    if !event.is_held
-                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        && !event.keystroke.modifiers.modified()
-                                    {
-                                        cx.stop_propagation();
-                                        w.prevent_default();
-                                        s.undo_continue(w, cx);
-                                    }
-                                }))
-                                .on_click(cx.listener(|s, event, w, cx| {
-                                    if matches!(event, ClickEvent::Mouse(_)) {
-                                        s.undo_continue(w, cx);
-                                    }
-                                })),
-                        )
-                        .child(glyph_button("Dismiss notification", "\u{e711}").on_click(
-                            cx.listener(|s, _, w, cx| {
-                                s.focus.focus(w);
-                                s.home_undo = None;
-                                cx.notify();
-                            }),
-                        )),
+            let notice = div()
+                .block_mouse_except_scroll()
+                .flex()
+                .items_center()
+                .gap_2()
+                .p_2()
+                .pl_3()
+                .rounded_lg()
+                .bg(rgb(0x1e2624))
+                .border_1()
+                .border_color(rgba(0xffffff2b))
+                .shadow_lg()
+                .child(
+                    label(
+                        format!("Removed {} from Continue Watching", removed.name),
+                        14.,
+                        TEXT,
+                    )
+                    .line_clamp(2),
+                )
+                .child(
+                    pill("undo-continue-removal", "Undo", None, true)
+                        .track_focus(&self.home_undo_focus)
+                        .on_key_down(cx.listener(|s, event: &KeyDownEvent, w, cx| {
+                            // The key that confirms removal can be released after Undo gains focus.
+                            if !event.is_held
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.keystroke.modifiers.modified()
+                            {
+                                cx.stop_propagation();
+                                w.prevent_default();
+                                s.undo_continue(w, cx);
+                            }
+                        }))
+                        .on_click(cx.listener(|s, event, w, cx| {
+                            if matches!(event, ClickEvent::Mouse(_)) {
+                                s.undo_continue(w, cx);
+                            }
+                        })),
+                )
+                .child(
+                    glyph_button("Dismiss notification", "\u{e711}").on_click(cx.listener(
+                        |s, _, w, cx| {
+                            s.focus.focus(w);
+                            s.home_undo = None;
+                            cx.notify();
+                        },
+                    )),
                 );
+            body = body.child(
+                div()
+                    .absolute()
+                    .bottom(px(20.))
+                    .right(px(20.))
+                    .max_w(relative(0.9))
+                    .child(reveal_menu(
+                        notice,
+                        "continue-undo-notice",
+                        point(px(0.), px(6.)),
+                    )),
+            );
         }
         body
     }

@@ -155,7 +155,11 @@ impl Default for ArtworkGlass {
 
 impl ArtworkGlass {
     fn current(&self) -> (Rgba, f32) {
-        let t = ease((self.start.elapsed().as_secs_f32() / self.duration).min(1.));
+        let t = if self.duration > 0. {
+            ease((self.start.elapsed().as_secs_f32() / self.duration).min(1.))
+        } else {
+            1.
+        };
         (self.from.blend(Rgba { a: t, ..self.to }), t)
     }
 
@@ -173,6 +177,7 @@ impl ArtworkGlass {
         &mut self,
         image: Option<&RenderImage>,
         discover: bool,
+        animate: bool,
         w: &mut Window,
         cx: &mut App,
     ) -> Rgba {
@@ -203,6 +208,9 @@ impl ArtworkGlass {
             }
             self.duration = if discover { 1. } else { 0.32 };
             self.start = Instant::now();
+        }
+        if !animate {
+            self.duration = 0.;
         }
         let (color, t) = self.current();
         if (t == 1. || !discover)

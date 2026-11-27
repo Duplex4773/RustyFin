@@ -137,6 +137,15 @@ impl Source {
             })),
         }
     }
+    pub fn subtitle_track(&self, index: i32) -> Option<&Stream> {
+        if index < 0 {
+            return None;
+        }
+        self.media_streams
+            .iter()
+            .flatten()
+            .find(|s| s.kind == "Subtitle" && s.index == Some(index))
+    }
     pub fn name(&self) -> String {
         self.name
             .clone()
@@ -256,7 +265,7 @@ impl Server {
     ) -> [&'a str; 7] {
         ["Videos", item, source, "Subtitles", index, "0", file]
     }
-    pub(super) fn subtitle_url(&self, item: &str, source: &str, stream: &Stream) -> Result<Url> {
+    pub(crate) fn subtitle_url(&self, item: &str, source: &str, stream: &Stream) -> Result<Url> {
         let mut url = self.base.clone();
         let format = match stream.codec.as_deref() {
             Some("ass" | "ssa") => "ass",
@@ -280,9 +289,36 @@ impl Server {
         Ok(url)
     }
     pub fn captions(&self, item: &str, source: &str, index: i32) -> Result<String> {
+        self.read_captions(item, source, index, "Stream.vtt")
+    }
+
+    pub(crate) fn playback_captions(
+        &self,
+        item: &str,
+        source: &str,
+        track: &Stream,
+    ) -> Result<String> {
+        let index = track.index.context("Subtitle stream index is missing.")?;
+        if matches!(track.codec.as_deref(), Some("subrip" | "srt")) {
+            // Jellyfin can serve SubRip in its original format without converting it.
+            match self.read_captions(item, source, index, "Stream.srt") {
+                Err(error)
+                    if error.downcast_ref::<reqwest::Error>().is_some_and(|e| {
+                        e.status()
+                            .is_some_and(|status| matches!(status.as_u16(), 400 | 404 | 415 | 500))
+                    }) => {}
+                result => return result,
+            }
+        }
+        self.captions(item, source, index)
+    }
+
+    fn read_captions(&self, item: &str, source: &str, index: i32, file: &str) -> Result<String> {
         use std::io::Read;
         let response = self
-            .get(&self.subtitle_path(item, source, &index.to_string(), "Stream.vtt"))
+            .get(&self.subtitle_path(item, source, &index.to_string(), file))
+            // Extracting embedded subtitles can take longer than a metadata request.
+            .timeout(Duration::from_secs(90))
             .send()
             .and_then(|r| r.error_for_status())
             .map_err(|e| e.without_url())?;

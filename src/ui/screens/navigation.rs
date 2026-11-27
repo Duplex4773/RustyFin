@@ -1,9 +1,4 @@
 use super::*;
-use gpui_component::{
-    Selectable,
-    button::{Button, ButtonVariants},
-    menu::DropdownMenu,
-};
 
 #[derive(Clone)]
 struct Link {
@@ -242,35 +237,36 @@ impl Library {
             ),
         ]);
         let active = overflow.iter().any(|link| link.active);
-        let owner = cx.weak_entity();
+        let more = ElementId::from("more-navigation");
+        let open = self.popup_menu.as_ref().is_some_and(|(id, _)| *id == more);
+        let more_button = nav_button(more.clone(), 76., active || open)
+            .text_size(px(14.))
+            .child("More ▾");
+        let more_button = accessibility::keyboard_focus(
+            accessibility::button(more_button, "More navigation", None, false),
+            cx,
+        );
         bar = bar
-            .child(accessibility::named_element(
-                Button::new("more-navigation")
-                    .ghost()
-                    .label("More ▾")
-                    .selected(active)
-                    .w(px(76.))
-                    .h(px(34.))
-                    .dropdown_menu(move |mut menu, w, _| {
-                        menu = menu
-                            .min_w(px(195.))
-                            .max_h((w.viewport_size().height - px(80.)).max(px(100.)))
-                            .scrollable(true);
-                        for link in &overflow {
-                            let target = link.screen.clone();
-                            let owner = owner.clone();
-                            menu = menu.item(
-                                accessibility::menu_item(link.name.clone())
-                                    .checked(link.active)
-                                    .on_click(move |_, w, cx| {
-                                        let _ = owner
-                                            .update(cx, |s, cx| s.navigate(target.clone(), w, cx));
-                                    }),
-                            );
-                        }
-                        menu
-                    }),
-                "More navigation",
+            .child(self.popup_trigger(
+                more,
+                more_button,
+                move |mut menu, owner| {
+                    menu = menu.min_w(px(195.));
+                    for link in &overflow {
+                        let target = link.screen.clone();
+                        let owner = owner.clone();
+                        menu = menu.item(
+                            accessibility::menu_item(link.name.clone())
+                                .checked(link.active)
+                                .on_click(move |_, w, cx| {
+                                    let _ =
+                                        owner.update(cx, |s, cx| s.navigate(target.clone(), w, cx));
+                                }),
+                        );
+                    }
+                    menu
+                },
+                cx,
             ))
             .child(div().flex_1());
         for link in [

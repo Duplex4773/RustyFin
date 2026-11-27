@@ -98,6 +98,7 @@ const FORMAT_NODE_ARRAY: c_int = 7;
 const FORMAT_NODE_MAP: c_int = 8;
 const SHADER_PROBE_REPLY: u64 = 1;
 const FEL_PROBE_REPLY: u64 = 2;
+const EVENT_PLAYBACK_RESTART: c_int = 21;
 
 #[derive(Default)]
 struct FelProbe {
@@ -226,6 +227,7 @@ pub struct Mpv {
     free: unsafe extern "C" fn(*mut c_void),
     event: unsafe extern "C" fn(Handle, f64) -> *const Event,
     loaded: bool,
+    video_presented: bool,
     passthrough_enabled: bool,
     pcm_output: bool,
     pcm_filters: Option<(bool, bool)>,
@@ -289,6 +291,7 @@ impl Mpv {
                 free,
                 event,
                 loaded: false,
+                video_presented: false,
                 passthrough_enabled: request.allow_passthrough,
                 pcm_output: false,
                 pcm_filters: Some((
@@ -703,7 +706,8 @@ impl Mpv {
                         ended = true;
                     }
                     8 => self.loaded = true,
-                    21 => {
+                    EVENT_PLAYBACK_RESTART => {
+                        self.video_presented = true;
                         if let Some(fel) = self.fel.as_mut() {
                             fel.checking_since = Some(Instant::now());
                             fel.last_request = None;
@@ -767,6 +771,7 @@ impl Mpv {
         };
         let status = Status {
             ready: self.loaded && self.route_notice_ready(),
+            video_presented: self.video_presented,
             position: self.number(c"time-pos"),
             duration: self.number(c"duration"),
             paused: paused != 0,

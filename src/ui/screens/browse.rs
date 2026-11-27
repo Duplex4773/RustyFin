@@ -125,7 +125,11 @@ impl Library {
                         deferred(
                             anchored()
                                 .snap_to_window_with_margin(px(8.))
-                                .child(menu.clone()),
+                                .child(reveal_menu(
+                                    div().child(menu.clone()),
+                                    ("popup-reveal", menu.entity_id()),
+                                    point(px(0.), px(-5.)),
+                                )),
                         )
                         .with_priority(2),
                     ),
@@ -283,7 +287,11 @@ impl Library {
             .flex_none()
             .child(row);
         if self.filters_open {
-            header = header.child(self.browse_filters(tab, q, cx));
+            header = header.child(reveal_menu(
+                self.browse_filters(tab, q, cx),
+                "browse-filters-reveal",
+                point(px(0.), px(-4.)),
+            ));
         } else {
             let mut chips = Vec::new();
             if q.unwatched {

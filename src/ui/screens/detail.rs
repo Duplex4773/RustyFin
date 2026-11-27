@@ -202,7 +202,7 @@ impl Library {
         let mut head = div().child(hero);
         match self.state.detail_panel {
             Some(DetailPanel::More) => {
-                head = head.child(
+                head = head.child(reveal_menu(
                     div()
                         .track_focus(&self.detail_panel_focus)
                         .tab_stop(false)
@@ -219,7 +219,9 @@ impl Library {
                                 cx,
                             ),
                         ),
-                );
+                    "detail-actions-reveal",
+                    point(px(0.), px(-4.)),
+                ));
                 if !overview.is_empty() {
                     head = head.child(
                         label(overview.to_owned(), 15., TEXT)
@@ -230,12 +232,14 @@ impl Library {
                 }
             }
             Some(DetailPanel::Editions) => {
-                head = head.child(
+                head = head.child(reveal_menu(
                     div()
                         .track_focus(&self.detail_panel_focus)
                         .tab_stop(false)
                         .child(self.edition_choices(item, cx).px(px(inset)).py_3()),
-                )
+                    "detail-editions-reveal",
+                    point(px(0.), px(-4.)),
+                ))
             }
             None => {}
         }

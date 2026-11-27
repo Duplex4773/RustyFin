@@ -119,6 +119,8 @@ pub struct Native {
     profile: String,
     resume: f64,
     started: bool,
+    first_frame_ready: bool,
+    video_presented: bool,
     start_paused: bool,
     source: Option<LocalSource>,
     audio: i32,
@@ -225,6 +227,8 @@ impl Native {
                 profile: profile.into(),
                 resume,
                 started: false,
+                first_frame_ready: false,
+                video_presented: false,
                 start_paused: false,
                 source,
                 audio: 0,
@@ -317,6 +321,7 @@ impl Native {
         self.check_source()?;
         while let Ok((event, arg, code)) = self.events.try_recv() {
             match MF_MEDIA_ENGINE_EVENT(event as i32) {
+                MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY => self.first_frame_ready = true,
                 MF_MEDIA_ENGINE_EVENT_PLAYING | MF_MEDIA_ENGINE_EVENT_SEEKED => self.moving = true,
                 MF_MEDIA_ENGINE_EVENT_PAUSE
                 | MF_MEDIA_ENGINE_EVENT_WAITING
@@ -345,22 +350,28 @@ impl Native {
         }
         unsafe {
             let position = self.engine.GetCurrentTime();
+            let paused = self.engine.IsPaused().as_bool();
+            let seeking = self.engine.IsSeeking().as_bool();
+            if self.started && !self.video_presented {
+                let rendered = self.frame_count(MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED);
+                // A paused first image can be visible without advancing the rendered frame count.
+                self.video_presented = rendered.is_some_and(|frames| frames > 0)
+                    || (self.first_frame_ready
+                        && !seeking
+                        && (paused || (rendered.is_none() && self.moving)));
+            }
             if let Some(local) = &self.source {
-                self.audio = local.clock(
-                    position,
-                    self.moving
-                        && !self.engine.IsPaused().as_bool()
-                        && !self.engine.IsSeeking().as_bool(),
-                );
+                self.audio = local.clock(position, self.moving && !paused && !seeking);
                 if self.audio == -2 {
                     return Err(OutputLost::BitstreamFailed.into());
                 }
             }
             Ok(Status {
                 ready: self.started,
+                video_presented: self.video_presented,
                 position: self.engine.GetCurrentTime(),
                 duration: self.engine.GetDuration(),
-                paused: self.engine.IsPaused().as_bool(),
+                paused,
                 ended: self.engine.IsEnded().as_bool(),
             })
         }
@@ -381,16 +392,19 @@ impl Native {
         self.audio > 0
     }
 
-    pub(super) fn performance_counters(&self) -> (Option<u32>, Option<u32>, Option<f64>) {
-        if !self.started {
-            return (None, None, None);
-        }
-        let frames = |kind| unsafe {
+    fn frame_count(&self, kind: MF_MEDIA_ENGINE_STATISTIC) -> Option<u32> {
+        unsafe {
             let mut statistic = self.engine.GetStatistics(kind).ok()?;
             let count = PropVariantToUInt32(&statistic).ok();
             let _ = PropVariantClear(&mut statistic);
             count
-        };
+        }
+    }
+
+    pub(super) fn performance_counters(&self) -> (Option<u32>, Option<u32>, Option<f64>) {
+        if !self.started {
+            return (None, None, None);
+        }
         let buffered = unsafe {
             let position = self.engine.GetCurrentTime();
             self.engine.GetBuffered().ok().and_then(|ranges| {
@@ -402,8 +416,8 @@ impl Native {
             })
         };
         (
-            frames(MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED),
-            frames(MF_MEDIA_ENGINE_STATISTIC_FRAMES_DROPPED),
+            self.frame_count(MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED),
+            self.frame_count(MF_MEDIA_ENGINE_STATISTIC_FRAMES_DROPPED),
             buffered,
         )
     }

@@ -117,6 +117,7 @@ pub fn prepare_route(
 #[derive(Default, Clone, Copy)]
 pub struct Status {
     pub ready: bool,
+    pub video_presented: bool,
     pub paused: bool,
     pub ended: bool,
     pub position: f64,
@@ -337,7 +338,8 @@ impl Player {
             || self.panel_open
             || self.audio_only
             || self.status.paused
-            || !self.status.ready;
+            || !self.status.ready
+            || !self.status.video_presented;
         let opacity = self.controls.opacity(Instant::now(), pinned, animate);
         if self.controls.fade_start.is_some() && opacity > 0. {
             window.request_animation_frame();

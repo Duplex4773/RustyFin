@@ -449,9 +449,7 @@ impl Library {
 
     fn track_rows(&self, page: PlayerMenu, p: &Player, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = Vec::new();
-        let Some(source) = self.current_source() else {
-            return rows;
-        };
+        let source = &p.source;
         let current = &self.controls.choice;
         let audio = page == Audio;
         let index = if audio {
@@ -460,8 +458,10 @@ impl Library {
                 .ok()
                 .flatten()
                 .and_then(|s| s.index)
-        } else {
+        } else if p.mpv() || self.downloads.playing.is_some() {
             current.subtitle.or(source.default_subtitle_stream_index)
+        } else {
+            self.controls.native_subtitle_index
         };
         let add = |id, label: String, value: i32| {
             let mut choice = current.clone();
@@ -474,7 +474,13 @@ impl Library {
             let selected = index.unwrap_or(-1) == value;
             selection(("stream-option", id), label, selected)
                 .when(selected, |d| self.initial_menu_button(d))
-                .on_click(cx.listener(move |s, _, w, cx| s.switch_tracks(choice.clone(), w, cx)))
+                .on_click(cx.listener(move |s, _, w, cx| {
+                    if audio {
+                        s.switch_tracks(choice.clone(), w, cx);
+                    } else {
+                        s.select_subtitle(choice.clone(), w, cx);
+                    }
+                }))
                 .into_any_element()
         };
         if audio && let Some(output) = p.audio_output() {
@@ -869,7 +875,12 @@ impl Library {
                                 focus.close.focus(w);
                             }
                         }
-                        focus.reveal(w, cx, !s.controls.warning.is_empty(), page == Episodes);
+                        focus.reveal(
+                            w,
+                            cx,
+                            !s.player_menu_notice(page).is_empty(),
+                            page == Episodes,
+                        );
                         if !p.keyboard_controls() {
                             focus.scope.focus(w);
                         }
@@ -878,7 +889,8 @@ impl Library {
                 });
             });
         }
-        let warning = !self.controls.warning.is_empty();
+        let notice = self.player_menu_notice(page).to_owned();
+        let warning = !notice.is_empty();
         let shader_status = (page == Shaders).then(|| p.shader_status()).flatten();
         let status_height = if shader_status.is_some() {
             SHADER_READOUT
@@ -949,11 +961,7 @@ impl Library {
                 .px(px(6.))
                 .py(px(6.))
                 .when(warning, |d| {
-                    d.child(
-                        label(self.controls.warning.clone(), 13., 0xffd9b3)
-                            .px_3()
-                            .py_2(),
-                    )
+                    d.child(label(notice, 13., 0xffd9b3).px_3().py_2())
                 })
                 .children(rows.into_iter().zip(scopes.iter()).enumerate().map(
                     |(i, (row, handle))| {
@@ -964,6 +972,17 @@ impl Library {
                             .child(row)
                     },
                 ));
+        let mut content = div().flex_1().min_h_0().flex().flex_col().relative();
+        if let Some((start, direction)) = self.controls.menu_page_motion {
+            let remaining = 1. - (start.elapsed().as_secs_f32() / 0.16).min(1.);
+            if remaining > 0. {
+                let offset = remaining * remaining * remaining;
+                w.request_animation_frame();
+                content = content
+                    .left(px(14. * direction * offset))
+                    .opacity(1. - 0.45 * offset);
+            }
+        }
         (
             div()
                 .track_focus(&self.menu_focus.scope)
@@ -981,11 +1000,14 @@ impl Library {
                 .border_1()
                 .border_color(rgba(0xffffff45))
                 .child(header)
-                .when(page == Episodes, |d| {
-                    d.children(self.episode_season_selector(cx))
-                })
-                .when_some(shader_status, |d, status| d.child(shader_readout(status)))
-                .child(body),
+                .child(
+                    content
+                        .when(page == Episodes, |d| {
+                            d.children(self.episode_season_selector(cx))
+                        })
+                        .when_some(shader_status, |d, status| d.child(shader_readout(status)))
+                        .child(body),
+                ),
             height + 2.,
         )
     }

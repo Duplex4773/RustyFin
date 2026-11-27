@@ -2,6 +2,31 @@
 
 Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
+## 2026-11-27 - Discover crossfades and playback menu motion
+
+- Discover keeps the current featured artwork visible until the next image loads, then crossfades between the two. The navigation tint and artwork wash follow the incoming image.
+- Playback settings rise into place and the Episodes drawer slides in from the right. Submenu content moves in the direction of navigation while the drawer header stays visible.
+- Featured artwork, tint, menu and poster focus transitions respect the Windows animation setting.
+
+## 2026-11-27 - Transparent subtitles and Windows window controls
+
+- Windows Dolby Vision subtitles use outlined lettering on a transparent background.
+- Fixed the player intercepting title bar and resize border clicks. Dragging, resizing, minimizing, maximizing, restoring and closing the window work during playback.
+
+## 2026-11-27 - Subtitle track switching
+
+- During Windows Dolby Vision playback, requesting subtitles from Jellyfin keeps the video playing. SubRip tracks load in their original format when available, with WebVTT as a fallback.
+- The subtitle menu shows when a track is loading. If loading fails, the current track remains active. Select **Off** to disable subtitles immediately and cancel a pending selection.
+- Track selections are saved to the profile on the server that owns the title.
+
+## 2026-11-27 - Menu entrance animations
+
+- Added short fade and slide transitions to navigation and Browse menus, Browse filters, title actions and version selection, playback menus, and the Continue Watching undo notice.
+
+## 2026-11-27 - Playback startup
+
+- The player covers the video area until the first frame is ready in mpv or Windows Dolby Vision, so windows behind RustyFin stay hidden while playback opens.
+
 ## 2026-11-27 - Dolby Vision playback controls
 
 - Fixed playback controls staying visible when an accessibility client was connected. The controls now fade after inactivity in windowed and fullscreen playback, including Dolby Vision Profile 8 through the Windows renderer.

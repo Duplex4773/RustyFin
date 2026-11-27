@@ -1215,18 +1215,29 @@ impl Library {
         let server = self
             .source_server(item.origin.as_deref())
             .context("This title’s Jellyfin account is unavailable.")?;
-        match Player::open(window, &request, server, item, &self.prefs) {
-            Ok(mut player) => {
+        match Player::open(window, &request, server.clone(), item, &self.prefs) {
+            Ok(player) => {
                 if !player.audio_only {
                     self.fullscreen_before_video
                         .get_or_insert_with(|| window.is_fullscreen());
                 }
                 self.controls.animate_chrome = scrolling::animations_enabled();
                 self.controls.volume_hovered = false;
-                if !player.mpv() && !self.controls.captions.is_empty() {
-                    player.caption_height = (self.prefs.subtitle_size as f32 * 1.7 + 12.).max(52.);
-                }
+                let load_caption = !player.mpv()
+                    && self.downloads.playing.is_none()
+                    && self.controls.native_subtitle_index.is_none();
                 self.player = Some(player);
+                self.update_caption_height();
+                if load_caption && let Some(track) = request.subtitle_track.clone() {
+                    self.load_native_subtitles(
+                        server,
+                        request.source.id.clone(),
+                        track,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
             }
             Err(error) => {
                 self.playback_error(&request, error, window, cx);
@@ -1256,6 +1267,7 @@ impl Library {
                                 request.resume = player.status.position;
                                 request.start_paused = player.status.paused;
                             }
+                            this.sync_native_subtitle_request(&mut request);
                             this.release_player();
                             this.playback_error(&request, error, window, cx);
                         }
@@ -1402,6 +1414,8 @@ impl Library {
             let mut retry = request.clone();
             retry.tone_map_to_sdr(output.hdr_available);
             self.controls.captions = Default::default();
+            self.controls.native_subtitle_index = None;
+            self.controls.subtitle_notice.clear();
             self.controls.warning.clear();
             if let Err(e) = self.start_player(retry, window, cx) {
                 self.message = format!("{e:#}");
@@ -1457,6 +1471,7 @@ impl Library {
 
     fn release_player(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.controls.subtitle_job = None;
         self.controls.episodes = Default::default();
         self.end_preview();
         let Some(player) = self.player.take() else {

@@ -100,6 +100,23 @@ fn section_heading(text: impl Into<SharedString>, size: f32) -> Div {
     let text = text.into();
     accessibility::heading(title(text.clone(), size), text, 2)
 }
+
+fn reveal_menu(view: Div, id: impl Into<ElementId>, offset: Point<Pixels>) -> AnyElement {
+    if !scrolling::animations_enabled() {
+        return view.into_any_element();
+    }
+    view.relative()
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(160)).with_easing(ease_out_quint()),
+            move |menu, progress| {
+                menu.left(offset.x * (1. - progress))
+                    .top(offset.y * (1. - progress))
+                    .opacity(progress)
+            },
+        )
+        .into_any_element()
+}
 fn tip(button: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
     accessibility::button(button, text.clone(), None, false)
@@ -331,7 +348,7 @@ fn poster_scores(item: &Item, bottom: f32) -> Option<Div> {
 }
 
 fn card_frame(face: Div, width: f32, selected: bool, id: ElementId) -> Stateful<Div> {
-    let face = if selected {
+    let face = if selected && scrolling::animations_enabled() {
         face.with_animation(
             "poster-focus-lift",
             Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
@@ -339,7 +356,8 @@ fn card_frame(face: Div, width: f32, selected: bool, id: ElementId) -> Stateful<
         )
         .into_any_element()
     } else {
-        face.into_any_element()
+        face.when(selected, |d| d.top(px(-POSTER_LIFT)))
+            .into_any_element()
     };
     div()
         .id(id)
@@ -1478,16 +1496,25 @@ impl Render for Library {
         self.load_similar(w, cx);
         self.load_extras(w, cx);
         let discover = matches!(self.state.screen, Screen::Discover);
+        let motion = scrolling::animations_enabled();
         let artwork = match &self.state.screen {
-            Screen::Discover => self.featured.get(self.hero),
-            Screen::Detail(item, _) => Some(item.as_ref()),
-            _ => None,
-        }
-        .and_then(|item| self.marquee_image(item, w));
+            Screen::Discover => self
+                .featured
+                .get(self.hero)
+                .and_then(|item| self.artwork.update_marquee(item, w, motion)),
+            Screen::Detail(item, _) => {
+                self.artwork.reset_marquee();
+                self.marquee_image(item, w)
+            }
+            _ => {
+                self.artwork.reset_marquee();
+                None
+            }
+        };
         let tint = self
             .artwork
             .glass
-            .sample(artwork.as_deref(), discover, w, cx);
+            .sample(artwork.as_deref(), discover, motion, w, cx);
         let content = if self.server.is_none() {
             self.connection(cx)
         } else {

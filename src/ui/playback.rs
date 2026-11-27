@@ -114,12 +114,16 @@ pub(super) struct Controls {
     pub lyric_scroll: ScrollHandle,
     pub lyric_line: Option<usize>,
     pub captions: Captions,
+    pub subtitle_job: Option<(i32, Task<()>)>,
+    pub subtitle_notice: String,
+    pub native_subtitle_index: Option<i32>,
     pub queue: Option<VecDeque<Item>>,
     pub speed: f64,
     pub zoom: f64,
     pub delay: f64,
     pub subtitle_delay: f64,
     pub menu: PlayerMenu,
+    pub menu_page_motion: Option<(Instant, f32)>,
     pub episodes: super::episodes::EpisodeDrawer,
     pub next_episode: Option<Item>,
     pub previous_episode: Option<Item>,
@@ -191,7 +195,6 @@ pub(super) struct Prepared {
     choice: MediaChoice,
     segments: Vec<Segment>,
     lyrics: Vec<crate::jellyfin::Lyric>,
-    captions: Captions,
     warning: String,
 }
 
@@ -223,7 +226,6 @@ impl Server {
         } else {
             self.item(&item.id).unwrap_or(item)
         };
-        let mut captions = Captions::default();
         let mut warning = String::new();
         let native = request.route.native_profile().is_some();
         if let Some(reason) = request
@@ -235,15 +237,7 @@ impl Server {
             choice.subtitle = Some(-1);
             request.subtitle_index = None;
             request.external_subtitle = None;
-        } else if native && let Some(index) = request.subtitle_index {
-            match self.captions(&item.id, &request.source.id, index) {
-                Ok(vtt) => captions = Captions::parse(&vtt),
-                Err(error) => {
-                    choice.subtitle = Some(-1);
-                    request.subtitle_index = None;
-                    warning = format!("Could not load subtitles. {error}");
-                }
-            }
+            request.subtitle_track = None;
         }
         let segments = if item.kind == "Audio" {
             vec![]
@@ -261,7 +255,6 @@ impl Server {
             item,
             request,
             segments,
-            captions,
             warning,
         })
     }
@@ -517,7 +510,10 @@ impl Library {
         self.controls.segments = prepared.segments;
         self.controls.lyrics = prepared.lyrics;
         self.controls.lyric_line = None;
-        self.controls.captions = prepared.captions;
+        self.controls.captions = Captions::default();
+        self.controls.subtitle_job = None;
+        self.controls.subtitle_notice.clear();
+        self.controls.native_subtitle_index = None;
         self.controls.warning = prepared.warning;
         self.controls.speed = 1.;
         self.controls.zoom = 1.;
@@ -525,6 +521,172 @@ impl Library {
         self.controls.subtitle_delay = 0.;
         self.controls.menu = PlayerMenu::Settings;
         self.start_player(prepared.request, w, cx)
+    }
+
+    pub(super) fn select_subtitle(
+        &mut self,
+        choice: MediaChoice,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(player) = self.player.as_ref() else {
+            return;
+        };
+        if player.mpv() {
+            self.switch_tracks(choice, w, cx);
+            return;
+        }
+        if self.busy || self.downloads.playing.is_some() || !player.status.ready {
+            return;
+        }
+        let (Some(item), Some(index)) = (self.playing.clone(), choice.subtitle) else {
+            return;
+        };
+        if self
+            .controls
+            .subtitle_job
+            .as_ref()
+            .is_some_and(|(pending, _)| *pending == index)
+        {
+            return;
+        }
+        if self.controls.native_subtitle_index == Some(index) {
+            self.controls.subtitle_job = None;
+            self.controls.subtitle_notice.clear();
+            cx.notify();
+            return;
+        }
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
+            return;
+        };
+        if index < 0 {
+            self.controls.subtitle_job = None;
+            self.set_native_captions(index, Captions::default());
+            self.save_subtitle_choice(choice, &server, &item);
+            cx.notify();
+        } else if let Some(track) = player
+            .source
+            .subtitle_track(index)
+            .filter(|stream| stream.subtitle_limitation(true).is_none())
+        {
+            self.load_native_subtitles(
+                server,
+                player.source.id.clone(),
+                track.clone(),
+                Some(choice),
+                w,
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn load_native_subtitles(
+        &mut self,
+        server: Server,
+        source: String,
+        track: crate::jellyfin::Stream,
+        choice: Option<MediaChoice>,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(item), Some(index)) = (self.playing.clone(), track.index) else {
+            return;
+        };
+        let (request_server, id) = (server.clone(), item.id.clone());
+        self.controls.subtitle_notice = format!("Loading {}…", track.label());
+        let work = cx.background_executor().spawn(async move {
+            let text = request_server.playback_captions(&id, &source, &track)?;
+            let captions = Captions::parse(&text);
+            anyhow::ensure!(!captions.is_empty(), "Jellyfin returned no subtitle cues.");
+            Ok::<_, anyhow::Error>(captions)
+        });
+        let job = cx.spawn_in(w, async move |view, cx| {
+            let result = work.await;
+            let _ = view.update(cx, |s, cx| {
+                s.controls.subtitle_job = None;
+                match result {
+                    Ok(captions) => {
+                        s.set_native_captions(index, captions);
+                        if let Some(choice) = choice {
+                            s.save_subtitle_choice(choice, &server, &item);
+                        }
+                    }
+                    Err(error) => {
+                        let detail = if error
+                            .downcast_ref::<reqwest::Error>()
+                            .is_some_and(|e| e.is_timeout())
+                        {
+                            "Jellyfin took too long to deliver the track.".to_owned()
+                        } else {
+                            error.to_string()
+                        };
+                        s.controls.subtitle_notice = format!("Could not load subtitles. {detail}");
+                    }
+                }
+                cx.notify();
+            });
+        });
+        self.controls.subtitle_job = Some((index, job));
+        cx.notify();
+    }
+
+    fn set_native_captions(&mut self, index: i32, captions: Captions) {
+        self.controls.native_subtitle_index = Some(index);
+        self.controls.captions = captions;
+        self.controls.subtitle_notice.clear();
+        self.update_caption_height();
+    }
+
+    pub(super) fn sync_native_subtitle_request(&self, request: &mut PlayRequest) {
+        let Some(index) = self.controls.native_subtitle_index else {
+            return;
+        };
+        let track = request.source.subtitle_track(index);
+        request.subtitle_index = track.and_then(|s| s.index);
+        request.subtitle_track = track.cloned();
+        request.external_subtitle = track.filter(|s| s.is_external).and_then(|track| {
+            let item = self.playing.as_ref()?;
+            let server = self.source_server(item.origin.as_deref())?;
+            server
+                .subtitle_url(&request.item, &request.source.id, track)
+                .ok()
+        });
+    }
+
+    fn save_subtitle_choice(&mut self, choice: MediaChoice, server: &Server, item: &Item) {
+        self.controls.choice = choice.clone();
+        match server
+            .profile_path()
+            .and_then(|path| preferences::save(&preferences::item_path(&path, &item.id), &choice))
+        {
+            Ok(()) => self.formats.clear(),
+            Err(error) => {
+                self.controls.subtitle_notice =
+                    format!("Could not save subtitle preference. {error}")
+            }
+        }
+        if matches!(&self.state.screen, Screen::Detail(i, _) if i.id == item.id && i.origin == item.origin)
+        {
+            self.state.choice = choice;
+        }
+    }
+
+    pub(super) fn update_caption_height(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.caption_height = if player.mpv() || self.controls.captions.is_empty() {
+                0.
+            } else {
+                (self.prefs.subtitle_size as f32 * 1.7 + 12.).max(52.)
+            };
+        }
+    }
+
+    pub(super) fn player_menu_notice(&self, page: PlayerMenu) -> &str {
+        if page == PlayerMenu::Subtitles && !self.controls.subtitle_notice.is_empty() {
+            &self.controls.subtitle_notice
+        } else {
+            &self.controls.warning
+        }
     }
     pub(super) fn retry_playback(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let Some(retry) = self.failure.take() else {
@@ -578,7 +740,9 @@ impl Library {
         if !player.status.ready {
             return;
         }
+        let destination = server.clone();
         let id = item.id.clone();
+        let origin = item.origin.clone();
         let prefs = self.prefs.clone();
         let sdr = crate::player::sdr_output(w);
         let key = choice.clone();
@@ -602,14 +766,12 @@ impl Library {
                     p.panel_open = open;
                     s.controls.menu = menu;
                     s.menu_focus.entering.set(open);
-                    if let Some(server) = &s.server {
-                        preferences::save(
-                            &preferences::item_path(&server.profile_path()?, &id),
-                            &choice,
-                        )?;
-                        s.formats.clear();
-                    }
-                    if matches!(&s.state.screen,Screen::Detail(i,_) if i.id==id) {
+                    preferences::save(
+                        &preferences::item_path(&destination.profile_path()?, &id),
+                        &choice,
+                    )?;
+                    s.formats.clear();
+                    if matches!(&s.state.screen, Screen::Detail(i, _) if i.id == id && i.origin == origin) {
                         s.state.choice = choice;
                     }
                 }

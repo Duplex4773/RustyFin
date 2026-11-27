@@ -677,9 +677,7 @@ impl Server {
             .subtitle
             .or(source.default_subtitle_stream_index)
             .unwrap_or(-1);
-        let subtitle = streams
-            .iter()
-            .find(|s| s.kind == "Subtitle" && s.index == Some(sub_index));
+        let subtitle = source.subtitle_track(sub_index);
         if choice.subtitle.is_some_and(|i| i >= 0) {
             ensure!(
                 subtitle.is_some(),

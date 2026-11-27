@@ -4,15 +4,32 @@ use gpui::*;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::Instant,
 };
 
 #[derive(Default)]
 pub(super) struct Artwork {
     pub(super) trickplay: super::trickplay::Trickplay,
     pub(super) glass: super::glass::ArtworkGlass,
+    marquee: MarqueeArtwork,
     entries: HashMap<Art, Option<Arc<RenderImage>>>,
     pending: HashSet<Art>,
     session: u64,
+}
+
+#[derive(Default)]
+struct MarqueeArtwork {
+    current: Option<Art>,
+    outgoing: Option<Art>,
+    started: Option<Instant>,
+}
+
+impl MarqueeArtwork {
+    fn progress(&self) -> f32 {
+        self.started.map_or(1., |start| {
+            ease_in_out((start.elapsed().as_secs_f32() / 0.4).min(1.))
+        })
+    }
 }
 
 pub(super) fn background(item: &Item) -> Option<Art> {
@@ -25,12 +42,63 @@ impl Artwork {
         self.entries.get(&key?)?.as_ref().cloned()
     }
 
+    pub fn update_marquee(
+        &mut self,
+        item: &Item,
+        w: &Window,
+        animate: bool,
+    ) -> Option<Arc<RenderImage>> {
+        let preferred = super::screens::marquee_art(item, w);
+        let preferred_loading = preferred
+            .as_ref()
+            .is_some_and(|art| !self.entries.contains_key(art));
+        let next = [preferred, background(item)]
+            .into_iter()
+            .flatten()
+            .find(|art| self.entries.get(art).is_some_and(Option::is_some));
+        let waiting = next.is_none() && preferred_loading;
+        let marquee = &mut self.marquee;
+        if !animate || marquee.progress() >= 1. {
+            marquee.outgoing = None;
+            marquee.started = None;
+            // Keep the current artwork on screen while the next title's image is loading.
+            if !waiting && marquee.current != next {
+                let previous = std::mem::replace(&mut marquee.current, next);
+                if animate {
+                    marquee.outgoing = previous;
+                    marquee.started = Some(Instant::now());
+                }
+            }
+        }
+        if marquee.started.is_some() {
+            w.request_animation_frame();
+        }
+        self.get(self.marquee.current.clone())
+    }
+
+    pub fn marquee_layers(&self) -> impl Iterator<Item = (Arc<RenderImage>, f32)> {
+        let t = self.marquee.progress();
+        // Hold the outgoing image under the incoming frame until late in the blend.
+        [
+            (&self.marquee.outgoing, 1. - t.powi(3)),
+            (&self.marquee.current, t),
+        ]
+        .into_iter()
+        .filter(|(_, alpha)| *alpha > 0.)
+        .filter_map(|(art, alpha)| self.get(art.clone()).map(|image| (image, alpha)))
+    }
+
+    pub fn reset_marquee(&mut self) {
+        self.marquee = MarqueeArtwork::default();
+    }
+
     pub fn clear(&mut self, w: &mut Window, cx: &mut App) {
         for img in self.entries.drain().filter_map(|(_, img)| img) {
             cx.drop_image(img, Some(w));
         }
         self.trickplay.clear(w, cx);
         self.glass.clear(w, cx);
+        self.reset_marquee();
         self.session += 1;
         self.pending.clear();
     }
@@ -112,6 +180,8 @@ impl Library {
                     plan.extend(super::screens::marquee_art(item, w));
                     plan.extend(item.art(ArtKind::Logo));
                 }
+                plan.extend(self.artwork.marquee.current.iter().cloned());
+                plan.extend(self.artwork.marquee.outgoing.iter().cloned());
                 // Load the first visible cards from each shelf before the off-screen cards.
                 for start in [0..5, 5..24] {
                     for shelf in &self.shelves {
