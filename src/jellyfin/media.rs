@@ -32,6 +32,29 @@ impl Segment {
     }
 }
 impl Stream {
+    pub fn spatial_audio(&self) -> Option<String> {
+        let spatial = match self.audio_spatial_format.as_deref() {
+            Some("DolbyAtmos") => "Dolby Atmos",
+            Some("DTSX") => "DTS:X",
+            _ => {
+                let mentions = |name: &str| {
+                    self.profile
+                        .iter()
+                        .chain(&self.display_title)
+                        .any(|value| value.to_ascii_lowercase().contains(name))
+                };
+                if mentions("atmos") {
+                    "Dolby Atmos"
+                } else if mentions("dts:x") {
+                    "DTS:X"
+                } else {
+                    return None;
+                }
+            }
+        };
+        Some(spatial.into())
+    }
+
     pub fn frame_rate(&self) -> Option<f64> {
         self.average_frame_rate
             .filter(|f| (1.0..=240.0).contains(f))

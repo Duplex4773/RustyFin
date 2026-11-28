@@ -187,6 +187,7 @@ impl Library {
             .unwrap_or_else(|| match tab {
                 Tab::Browse if q.favorites => "Favourites",
                 Tab::Browse => kind_name(q.kind),
+                Tab::Collections => "Collections",
                 _ => "Library",
             });
         let compact = w.viewport_size().width < px(800.);
@@ -279,7 +280,7 @@ impl Library {
                 .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
         );
         let mut header = div()
-            .px(px(PAD))
+            .px(px(CONTENT_GUTTER))
             .py_2()
             .flex()
             .flex_col()
@@ -341,14 +342,20 @@ impl Library {
                 header = header.child(div().flex().gap_1().flex_wrap().children(chips));
             }
         }
-        div()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(self.catalog_wall(q, w, cx))
+        let preview = self.catalog_preview_panel(w, cx);
+        let mut page = div().flex_1().min_w_0().min_h_0().flex().flex_col();
+        if self.state.screen.spotlight() {
+            page = page
+                .children(preview)
+                .child(header)
+                .child(self.catalog_wall(q, w, cx));
+        } else {
+            page = page
+                .child(header)
+                .child(self.catalog_wall(q, w, cx))
+                .children(preview);
+        }
+        page
     }
 
     fn browse_filters(&self, tab: Tab, q: &CatalogQuery, cx: &Context<Self>) -> Div {

@@ -1,6 +1,11 @@
 use super::*;
 use crate::jellyfin::formats::Formats;
 
+pub(super) fn image_height(item: &Item, width: f32) -> Pixels {
+    let square = matches!(item.kind.as_str(), "MusicAlbum" | "MusicArtist" | "Audio");
+    px((width * if square { 1. } else { 1.5 }).round())
+}
+
 // The catalogue has fixed card dimensions. Paint static artwork and text in
 // one element so scrolling doesn't lay out every glyph label and separator.
 fn line(
@@ -54,7 +59,7 @@ impl PosterText {
     fn new(key: PosterTextKey, w: &Window, cx: &App) -> Self {
         let width = Some(key.width);
         let title = line(&key.title, 13., FontWeight::SEMIBOLD, TEXT, width, w, cx);
-        let subtitle = line(&key.subtitle, 11., FontWeight::NORMAL, MUTED, width, w, cx);
+        let subtitle = line(&key.subtitle, 11., FontWeight::NORMAL, META, width, w, cx);
         let compact = key.width < px(155.);
         let labels = key
             .formats
@@ -165,8 +170,7 @@ impl Library {
         id: &ElementId,
         cx: &mut Context<Self>,
     ) -> Div {
-        let square = matches!(item.kind.as_str(), "MusicAlbum" | "MusicArtist" | "Audio");
-        let height = px((width * if square { 1. } else { 1.5 }).round());
+        let height = image_height(item, width);
         let art = self.artwork.get(item.art(poster));
         let name = item.name.clone();
         let subtitle = if item.kind == "Episode" {
@@ -194,8 +198,9 @@ impl Library {
                             let fit = ObjectFit::Cover.get_bounds(picture, image.size(0));
                             let _ = w.paint_image(fit, px(8.).into(), image, 0, false);
                         } else {
-                            w.paint_quad(fill(picture, rgb(0x25272c)).corner_radii(px(8.)));
+                            w.paint_quad(fill(picture, rgb(SURFACE)).corner_radii(px(8.)));
                         }
+                        w.paint_quad(fill(picture, poster_scrim()).corner_radii(px(8.)));
                         if progress > 0. {
                             paint_progress(picture, progress, w);
                         }
@@ -224,22 +229,17 @@ impl Library {
         .absolute()
         .inset_0()
         .size_full();
-        let mut overlay = div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .w_full()
-            .h(height)
-            .rounded(px(8.))
-            .border_2()
-            .border_color(if selected { rgb(TEXT) } else { rgba(0) })
-            .group_hover("media-card", |s| s.border_color(rgb(TEXT)));
+        let mut overlay = poster_edge(
+            div().absolute().top_0().left_0().w_full().h(height),
+            selected,
+            px(8.),
+        );
         if missing {
             overlay = overlay
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(VIDEO, 23.).text_color(rgb(0x55575f)));
+                .child(icon(VIDEO, 23.).text_color(rgb(MUTED)));
         }
         if watched {
             overlay = overlay.child(

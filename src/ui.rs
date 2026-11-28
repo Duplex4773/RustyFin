@@ -15,6 +15,7 @@ mod history;
 mod home;
 mod scrolling;
 mod services;
+pub(crate) mod theme;
 mod trickplay;
 use downloads::Downloads;
 use explore::Explore;
@@ -102,6 +103,23 @@ enum SeriesFocus {
     Episodes,
 }
 
+fn first_season(seasons: &[Item]) -> Option<&Item> {
+    seasons
+        .iter()
+        .find(|s| s.index_number != Some(0))
+        .or_else(|| seasons.first())
+}
+
+fn episode_season<'a>(episode: &'a Item, seasons: &'a [Item]) -> Option<&'a str> {
+    episode.season_id.as_deref().or_else(|| {
+        let number = episode.parent_index_number?;
+        seasons
+            .iter()
+            .find(|s| s.index_number == Some(number))
+            .map(|s| s.id.as_str())
+    })
+}
+
 #[derive(Clone, Copy)]
 enum LibraryReturn {
     Leaving(Instant),
@@ -118,6 +136,7 @@ struct ViewState {
     seasons: Vec<Item>,
     series_target: Option<Item>,
     reload_series_target: bool,
+    series_target_error: bool,
     extras: [screens::ExtraFeed; 2],
     timers: Vec<crate::jellyfin::live::Timer>,
     choice: MediaChoice,
@@ -125,6 +144,8 @@ struct ViewState {
     detail_panel: Option<DetailPanel>,
     series_focus: SeriesFocus,
     season_scroll: ScrollHandle,
+    series_rows: ScrollHandle,
+    hovered_episode: Option<(String, Instant)>,
     cast_start: usize,
     extra_start: usize,
     similar: Option<Result<Vec<Item>, String>>,
@@ -141,6 +162,14 @@ struct ViewState {
     scroll: ScrollHandle,
     wheel_motion: Option<scrolling::WheelMotion>,
     wall: catalog_wall::CatalogWall,
+    catalog_cover: Option<screens::CatalogCover>,
+}
+
+struct FlagRetry {
+    item: Item,
+    favorite: bool,
+    value: bool,
+    message: String,
 }
 
 impl ViewState {
@@ -155,6 +184,7 @@ impl ViewState {
             seasons: Vec::new(),
             series_target: None,
             reload_series_target: false,
+            series_target_error: false,
             extras: Default::default(),
             timers: vec![],
             choice: Default::default(),
@@ -162,6 +192,8 @@ impl ViewState {
             detail_panel: None,
             series_focus: SeriesFocus::Hero,
             season_scroll: ScrollHandle::new(),
+            series_rows: ScrollHandle::new(),
+            hovered_episode: None,
             cast_start: 0,
             extra_start: 0,
             similar: None,
@@ -178,6 +210,7 @@ impl ViewState {
             scroll: ScrollHandle::new(),
             wheel_motion: None,
             wall: Default::default(),
+            catalog_cover: None,
         }
     }
 }
@@ -200,11 +233,13 @@ pub struct Library {
     job: Option<Task<()>>,
     playback_poll: Option<Task<()>>,
     flag_job: Option<Task<()>>,
+    flag_retry: Option<FlagRetry>,
     home: home::Home,
     home_dirty: bool,
     home_undo: Option<preferences::DismissedTitle>,
     home_undo_focus: FocusHandle,
     search_target_job: Option<Task<()>>,
+    series_target_job: Option<Task<()>>,
     recent_searches: Vec<String>,
     search_delay: Option<Task<()>>,
     next_search_request: u64,
@@ -332,11 +367,13 @@ impl Library {
             job: None,
             playback_poll: None,
             flag_job: None,
+            flag_retry: None,
             home: Default::default(),
             home_dirty: false,
             home_undo: None,
             home_undo_focus: cx.focus_handle(),
             search_target_job: None,
+            series_target_job: None,
             recent_searches: vec![],
             search_delay: None,
             next_search_request: 0,
@@ -430,6 +467,7 @@ impl Library {
     ) {
         self.message.clear();
         self.failure = None;
+        self.flag_retry = None;
         self.busy = true;
         let worker = cx.background_executor().spawn(async move { work() });
         self.job = Some(cx.spawn_in(window, async move |view, cx| {
@@ -588,6 +626,7 @@ impl Library {
     }
 
     fn clear_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.series_target_job = None;
         self.similar_job = None;
         self.extras_jobs = Default::default();
         self.return_fade = None;
@@ -601,6 +640,7 @@ impl Library {
         self.controls = Default::default();
         self.load_preferences();
         self.flag_job = None;
+        self.flag_retry = None;
         self.home.clear();
         self.home_dirty = false;
         self.history.clear();
@@ -643,6 +683,9 @@ impl Library {
     }
 
     fn leave_view(&mut self, window: &Window, cx: &App) {
+        if self.series_target_job.take().is_some() {
+            self.state.reload_series_target = true;
+        }
         self.state.settings_nav.remember(window, cx);
         self.search_keyboard = None;
         self.state.wheel_motion = None;
@@ -660,6 +703,7 @@ impl Library {
         self.busy = false;
         self.message.clear();
         self.failure = None;
+        self.flag_retry = None;
         self.rebind = None;
         self.filters_open = false;
         self.popup_menu = None;
@@ -789,7 +833,6 @@ impl Library {
                 self.state.screen,
                 Screen::Explore | Screen::ExploreTitle(_) | Screen::Anime | Screen::AnimeTitle(_)
             )
-            || matches!(&self.state.screen, Screen::Detail(i,_) if i.kind == "Series" && self.state.series_target.is_none())
         {
             self.load(window, cx);
         }
@@ -935,55 +978,21 @@ impl Library {
                         } else {
                             known
                         };
-                        let series = item.kind == "Series";
-                        let mut target = cached_target;
-                        if series && target.is_none() {
-                            target = server.series_target(&item.id)?;
-                        }
-                        let first_season = seasons
-                            .iter()
-                            .find(|s| s.index_number != Some(0))
-                            .or_else(|| seasons.first());
+                        let target = cached_target;
                         let season = season
                             .or_else(|| {
-                                target.as_ref().and_then(|ep| {
-                                    ep.season_id.clone().or_else(|| {
-                                        seasons
-                                            .iter()
-                                            .find(|s| {
-                                                ep.parent_index_number.is_some()
-                                                    && s.index_number == ep.parent_index_number
-                                            })
-                                            .map(|s| s.id.clone())
-                                    })
-                                })
+                                target
+                                    .as_ref()
+                                    .and_then(|ep| episode_season(ep, &seasons))
+                                    .map(str::to_owned)
                             })
-                            .or_else(|| first_season.map(|s| s.id.clone()));
+                            .or_else(|| first_season(&seasons).map(|s| s.id.clone()));
                         let (page, start) = server.children_page(
                             &item,
                             season.as_deref(),
                             offset,
                             target.as_ref().filter(|_| hydrate),
                         )?;
-                        if series && target.is_none() {
-                            let default_season = first_season.map(|s| s.id.as_str());
-                            let fallback;
-                            let episodes = if offset == 0 && season.as_deref() == default_season {
-                                &page.items
-                            } else {
-                                fallback = server.children(&item, default_season, 0)?;
-                                &fallback.items
-                            };
-                            target = episodes
-                                .iter()
-                                .find(|ep| {
-                                    ep.playable()
-                                        && ep.user_data.as_ref().and_then(|u| u.played)
-                                            != Some(true)
-                                })
-                                .or_else(|| episodes.iter().find(|ep| ep.playable()))
-                                .cloned();
-                        }
                         Ok((page, seasons, season, item, target, start))
                     },
                     move |s, (page, seasons, season, item, target, start), w, cx| {
@@ -1002,9 +1011,16 @@ impl Library {
                                 .unwrap_or(0);
                         }
                         s.state.offset = start;
-                        s.state.series_target = target;
-                        s.state.reload_series_target = false;
-                        Self::receive_page(s, page, w, cx)
+                        if s.state.series_target.is_none() {
+                            s.state.series_target = target;
+                        }
+                        Self::receive_page(s, page, w, cx)?;
+                        if hydrate && s.state.series_target.is_none()
+                            || s.state.reload_series_target
+                        {
+                            s.load_series_target(hydrate, w, cx);
+                        }
+                        Ok(())
                     },
                 );
             }
@@ -1013,6 +1029,121 @@ impl Library {
                 cx.notify();
             }
         }
+    }
+
+    fn load_series_target(&mut self, follow: bool, w: &Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.state.reload_series_target) {
+            self.series_target_job = None;
+        }
+        let Screen::Detail(item, season) = &self.state.screen else {
+            return;
+        };
+        if item.kind != "Series" || self.series_target_job.is_some() {
+            return;
+        }
+        let Some(server) = self.source_server(item.origin.as_deref()) else {
+            return;
+        };
+        let item = item.clone();
+        let seasons = self.state.seasons.clone();
+        let first = first_season(&seasons).map(|s| s.id.clone());
+        let initial_season = season.clone();
+        let offset = self.state.offset;
+        let on_first_page = offset == 0 && *season == first && self.state.page.is_some();
+        let first_playable = |episodes: &[Item]| {
+            episodes
+                .iter()
+                .filter(|e| e.playable())
+                .find(|e| e.user_data.as_ref().and_then(|u| u.played) != Some(true))
+                .or_else(|| episodes.iter().find(|e| e.playable()))
+                .cloned()
+        };
+        let fallback = self
+            .state
+            .page
+            .as_ref()
+            .and_then(|p| first_playable(&p.items));
+        let ids: Vec<_> = self
+            .state
+            .page
+            .iter()
+            .flat_map(|p| &p.items)
+            .map(|e| e.id.clone())
+            .collect();
+        let current = season.clone();
+        self.state.series_target_error = false;
+        let worker = cx.background_executor().spawn(async move {
+            let target = match server.series_target(&item.id)? {
+                Some(ep) => Some(ep),
+                None if on_first_page => fallback,
+                None => first_playable(&server.children(&item, first.as_deref(), 0)?.items),
+            };
+            // A resume target may live in a different season or beyond the first page.
+            // A failure to locate its row must not prevent playing it from the header.
+            let page = target
+                .as_ref()
+                .filter(|ep| follow && !ids.contains(&ep.id))
+                .and_then(|ep| {
+                    let season = episode_season(ep, &seasons).map(str::to_owned).or(current);
+                    let (page, start) = server
+                        .children_page(&item, season.as_deref(), 0, Some(ep))
+                        .ok()?;
+                    page.items
+                        .iter()
+                        .any(|e| e.id == ep.id)
+                        .then_some((season, page, start))
+                });
+            anyhow::Ok((target, page))
+        });
+        self.series_target_job = Some(cx.spawn_in(w, async move |view, cx| {
+            let result = worker.await;
+            let _ = view.update_in(cx, |s, w, cx| {
+                s.series_target_job = None;
+                let Screen::Detail(_, season) = &mut s.state.screen else {
+                    return;
+                };
+                match result {
+                    Ok((target, page)) => {
+                        if follow
+                            && *season == initial_season
+                            && s.state.offset == offset
+                            && !s.busy
+                            && s.state.series_focus == SeriesFocus::Hero
+                            && s.state.detail_panel.is_none()
+                            && s.state.scroll.offset().y == px(0.)
+                            && s.focus.is_focused(w)
+                        {
+                            if let Some((id, page, start)) = page {
+                                *season = id;
+                                s.state.page = Some(page);
+                                s.state.offset = start;
+                                if let Some(index) = s
+                                    .state
+                                    .seasons
+                                    .iter()
+                                    .position(|part| Some(&part.id) == season.as_ref())
+                                {
+                                    s.state.season_scroll.scroll_to_item(index);
+                                }
+                            }
+                            if let Some(ep) = &target
+                                && let Some(index) = s
+                                    .state
+                                    .page
+                                    .as_ref()
+                                    .and_then(|p| p.items.iter().position(|e| e.id == ep.id))
+                            {
+                                s.state.selection = index;
+                            }
+                        }
+                        s.state.series_target = target;
+                    }
+                    Err(_) => s.state.series_target_error = true,
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     fn browse_servers(&self) -> Vec<Server> {
@@ -1074,6 +1205,8 @@ impl Library {
             self.home_dirty = true;
         }
         if matches!(&self.state.screen, Screen::Detail(i, _) if i.kind == "Series") {
+            self.series_target_job = None;
+            self.state.reload_series_target = true;
             self.state.series_target = None;
             self.home_dirty = true;
         }
@@ -1174,6 +1307,7 @@ impl Library {
                     .iter()
                     .position(|i| i.id == item.id && i.origin == item.origin)
             });
+        let cover = self.catalog_cover_for(&item, w);
         if matches!(self.state.screen, Screen::Library(..))
             && let Some(index) = self.state.wall.index_of(&item.id)
         {
@@ -1190,6 +1324,7 @@ impl Library {
             );
         } else {
             self.navigate(Screen::Detail(Box::new(item), None), w, cx);
+            self.state.catalog_cover = cover;
         }
     }
     fn play_item(&mut self, item: Item, w: &mut Window, cx: &mut Context<Self>) {
@@ -1501,6 +1636,11 @@ impl Library {
             .and_then(|i| i.origin.clone())
             .or_else(|| active.clone());
         if let Some(episode) = self.playing.as_ref().filter(|i| i.kind == "Episode") {
+            if matches!(&self.state.screen, Screen::Detail(show, _) if episode.series_id.as_ref() == Some(&show.id)
+                && show.origin.as_ref().or(self.state.profile.as_ref()).or(active.as_ref()) == origin.as_ref())
+            {
+                self.series_target_job = None;
+            }
             for state in self
                 .history
                 .iter_mut()
@@ -1524,6 +1664,7 @@ impl Library {
                 {
                     state.reload_series_target =
                         player.status.ended && self.controls.next_episode.is_none();
+                    state.series_target_error = false;
                     state.series_target = if player.status.ended {
                         self.controls.next_episode.clone()
                     } else {
@@ -1555,7 +1696,7 @@ impl Library {
 
     fn set_item_flag(
         &mut self,
-        item: Item,
+        mut item: Item,
         favorite: bool,
         value: bool,
         window: &mut Window,
@@ -1569,6 +1710,14 @@ impl Library {
         };
         let id = item.id.clone();
         let origin = server.identity().map(|a| a.key());
+        item.origin.clone_from(&origin);
+        let from_home = matches!(self.state.screen, Screen::Discover);
+        let profile = self.state.profile.clone();
+        if let Some(retry) = self.flag_retry.take()
+            && self.message == retry.message
+        {
+            self.message.clear();
+        }
         let target = id.clone();
         let worker = cx
             .background_executor()
@@ -1598,7 +1747,18 @@ impl Library {
                         }
                         s.home_dirty = true;
                     }
-                    Err(e) => s.message = format!("Could not update this title. {e:#}"),
+                    Err(e) => {
+                        let same_view = if from_home {
+                            matches!(s.state.screen, Screen::Discover)
+                        } else {
+                            matches!(&s.state.screen, Screen::Detail(i, _) if i.id == id && i.origin.as_ref().or(s.state.profile.as_ref()) == origin.as_ref())
+                        };
+                        if same_view && s.state.profile == profile {
+                            s.failure = None;
+                            s.message = format!("Could not update this title. {e:#}");
+                            s.flag_retry = Some(FlagRetry { item, favorite, value, message: s.message.clone() });
+                        }
+                    }
                 }
                 cx.notify();
             });
@@ -1944,6 +2104,14 @@ impl Library {
             if self.detail_action_key(key, window, cx) {
                 cx.stop_propagation();
                 cx.notify();
+                return;
+            }
+            if (matches!(self.state.screen, Screen::Detail(..))
+                || self.state.screen.catalog_preview())
+                && matches!(key, "enter" | "space")
+                && !self.focus.is_focused(window)
+            {
+                // Let the tab-focused control perform its own activation.
                 return;
             }
             if self.settings_key(key, window, cx) {

@@ -23,10 +23,22 @@ fn nav_button(id: ElementId, width: f32, active: bool) -> Stateful<Div> {
         .px(px(6.))
         .rounded_md()
         .cursor_pointer()
-        .text_color(rgb(0xb8bcc4))
-        .when(active, |d| d.bg(rgb(0x30372b)).text_color(rgb(LIME)))
-        .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(TEXT)))
-        .focus(|d| d.border_1().border_color(rgb(LIME)))
+        .relative()
+        .text_color(rgb(BODY))
+        .when(active, |d| {
+            d.text_color(rgb(TEXT)).child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left(px(9.))
+                    .right(px(9.))
+                    .h(px(2.))
+                    .rounded_full()
+                    .bg(rgb(TEXT)),
+            )
+        })
+        .hover(|d| d.bg(rgba(HOVER_FILL)).text_color(rgb(TEXT)))
+        .focus(|d| d.border_1().border_color(rgb(FOCUS)))
 }
 
 impl Link {
@@ -58,7 +70,7 @@ impl Link {
                     .path(self.glyph)
                     .size(px(17.))
                     .flex_none()
-                    .text_color(rgb(if self.active { LIME } else { 0xb8bcc4 })),
+                    .text_color(rgb(if self.active { TEXT } else { BODY })),
             )
             .when(show_name, |d| {
                 d.child(
@@ -81,7 +93,7 @@ impl Link {
 }
 
 impl Library {
-    pub(super) fn top_navigation(&self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn top_navigation(&self, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
         let screen = &self.state.screen;
         let scroll = self.state.page_scroll();
@@ -89,10 +101,6 @@ impl Library {
         let progress = move |y: Pixels| (-f32::from(y) / distance).clamp(0., 1.);
         let docked = progress(scroll.offset().y);
         let floating = 1. - docked;
-        let fill = tint.blend(Rgba {
-            a: 0.72 * docked,
-            ..rgb(0x121619)
-        });
         let margin = (width * 0.016).clamp(7., 16.);
         // Keep the originating library highlighted as users drill into titles and their cast.
         let section = if matches!(screen, Screen::Detail(..) | Screen::Copies { .. }) {
@@ -164,7 +172,7 @@ impl Library {
             .tab_group()
             .tab_stop(false)
             .absolute()
-            .top(px(9. * floating))
+            .top(px(NAV_TOP_INSET * floating))
             .left(px(margin * floating))
             .right(px(margin * floating))
             .block_mouse_except_scroll()
@@ -173,13 +181,6 @@ impl Library {
             .flex()
             .items_center()
             .gap(px(4.))
-            .rounded(px(15. * floating))
-            .bg(Rgba {
-                a: 0.76 + 0.22 * docked,
-                ..fill
-            })
-            .border_1()
-            .border_color(Hsla::from(fill.blend(rgba(0xffffff46))).opacity(0.64))
             .child(
                 accessibility::keyboard_focus(tip(home, "Home"), cx)
                     .on_click(cx.listener(|s, _, w, cx| s.navigate(Screen::Discover, w, cx))),
@@ -187,7 +188,23 @@ impl Library {
         let mut overflow = Vec::new();
         // Reserve the home link, More and the utility buttons before fitting library names.
         // Budget for the floating width even while docked to keep the shortcuts in place.
-        let mut remaining = width - 2. * (inset + margin + 1.) - 112. - 76. - 4. * 36. - 36.;
+        let connection = self
+            .server
+            .as_ref()
+            .filter(|_| matches!(screen, Screen::Discover))
+            .and_then(|server| {
+                let status = self.home.server_status(&server.identity()?.key());
+                Some((status, format!("{status} · {}", server.host())))
+            });
+        let status_width = if connection.is_none() {
+            0.
+        } else if width >= 920. {
+            162.
+        } else {
+            20.
+        };
+        let mut remaining =
+            width - 2. * (inset + margin + 1.) - 112. - 76. - 4. * 36. - 36. - status_width;
         for (i, link) in tabs.into_iter().enumerate() {
             // Keep the library names legible on small windows. The two fixed shortcuts have distinct icons.
             let show_name = width >= 900. || i >= 2;
@@ -239,7 +256,8 @@ impl Library {
         let active = overflow.iter().any(|link| link.active);
         let more = ElementId::from("more-navigation");
         let open = self.popup_menu.as_ref().is_some_and(|(id, _)| *id == more);
-        let more_button = nav_button(more.clone(), 76., active || open)
+        let more_button = nav_button(more.clone(), 76., active)
+            .when(open, |d| d.bg(rgb(SELECTED)))
             .text_size(px(14.))
             .child("More ▾");
         let more_button = accessibility::keyboard_focus(
@@ -268,7 +286,32 @@ impl Library {
                 },
                 cx,
             ))
-            .child(div().flex_1());
+            .child(div().flex_1())
+            .when_some(connection, |d, (state, text)| {
+                let dot = if state == "Connected" { 0xa7d5c7 } else { META };
+                d.child(
+                    div()
+                        .id("home-server-status")
+                        .relative()
+                        .max_w(px(status_width))
+                        .h(px(26.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .px(px(6.))
+                        .rounded_full()
+                        .bg(rgba(OSD_GLASS))
+                        .border_1()
+                        .border_color(rgba(REST_EDGE))
+                        .child(div().flex_none().size(px(6.)).rounded_full().bg(rgb(dot)))
+                        .when(width >= 920., |p| {
+                            p.child(label(text.clone(), 12., BODY).min_w_0().truncate())
+                        })
+                        .children(accessibility::status(&text))
+                        .tooltip(move |w, cx| Tooltip::new(text.clone()).build(w, cx)),
+                )
+            });
         for link in [
             Link::new(
                 "Search",
@@ -303,7 +346,7 @@ impl Library {
             );
         }
         // Programmatic keyboard/Back scrolls can settle in prepaint, after render read the handle.
-        bar.child(
+        let bar = bar.child(
             canvas(
                 move |_, w, _| {
                     let actual = progress(scroll.offset().y);
@@ -315,6 +358,19 @@ impl Library {
             )
             .absolute()
             .size(px(1.)),
-        )
+        );
+        let height = NAV_HEIGHT + 48.;
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(px(height))
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba((BG << 8) | (199. + 50. * docked) as u32), 0.22),
+                linear_color_stop(rgba(BG << 8), 1.),
+            ))
+            .child(bar)
     }
 }

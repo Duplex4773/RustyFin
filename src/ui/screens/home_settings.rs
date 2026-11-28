@@ -1,5 +1,5 @@
 use super::{
-    settings::{group, heading, toggle},
+    settings::{group, section_card, section_stack, settings_columns, toggle},
     *,
 };
 
@@ -13,25 +13,45 @@ impl Library {
         })
     }
 
-    pub(super) fn home_settings(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn home_settings(&self, wide: bool, cx: &mut Context<Self>) -> Div {
         let layout = &self.prefs.home.layout;
         let order = layout.shelf_order();
-        let mut shelves = group().gap_2();
+        let mut shelves = group();
         for (index, kind) in order.iter().copied().enumerate() {
             let visible = !layout.hidden.contains(&kind);
-            let mut controls = div().flex().items_center().gap_1().px_2();
+            let mut controls = div().flex_none().flex().items_center().gap_1().pr_2();
             for (direction, name, available) in [
                 (-1, "Move up", index > 0),
                 (1, "Move down", index + 1 < order.len()),
             ] {
                 if available {
+                    let action = SharedString::from(format!("{name} {}", kind.title()));
                     controls = controls.child(
                         self.settings_button(
-                            pill(
-                                SharedString::from(format!("{name} {}", kind.title())),
-                                name,
-                                None,
-                                false,
+                            tip(
+                                div()
+                                    .id(action.clone())
+                                    .size(px(34.))
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(rgba(REST_EDGE))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|d| {
+                                        d.bg(rgba(HOVER_FILL)).border_color(rgba(HOVER_EDGE))
+                                    })
+                                    .active(|d| d.bg(rgba(PRESS_FILL)))
+                                    .child(icon(
+                                        if direction < 0 {
+                                            "\u{e70e}"
+                                        } else {
+                                            "\u{e70d}"
+                                        },
+                                        13.,
+                                    )),
+                                action,
                             ),
                             cx,
                         )
@@ -41,14 +61,15 @@ impl Library {
                             s.focus_page_button(kind.title(), w);
                         })),
                     );
+                } else {
+                    // Reserve the slot so switches and arrows align across all shelves.
+                    controls = controls.child(div().flex_none().size(px(34.)));
                 }
             }
             shelves = shelves.child(
                 div()
                     .flex()
                     .items_center()
-                    .rounded_lg()
-                    .bg(rgb(SURFACE))
                     .child(
                         self.settings_row(
                             cx,
@@ -116,29 +137,21 @@ impl Library {
             );
         }
 
-        let mut body = div()
-            .max_w(px(840.))
-            .child(label("Changes apply to this profile.", 14., MUTED))
-            .child(heading("Shelves"))
-            .child(shelves)
-            .child(heading("Pinned shortcuts"))
-            .child(pins)
-            .child(
-                self.settings_row(
-                    cx,
-                    "reset-home",
-                    REFRESH,
-                    "Restore default layout",
-                    "",
-                    div(),
-                )
-                .mt_4()
-                .rounded_lg()
-                .on_click(cx.listener(|s, _, _, cx| {
-                    s.prefs.home.layout = Default::default();
-                    s.save_home(cx);
-                })),
-            );
+        let mut shortcuts = section_stack().child(section_card("Pinned shortcuts", pins));
+        let reset = group().child(
+            self.settings_row(
+                cx,
+                "reset-home",
+                REFRESH,
+                "Restore default layout",
+                "",
+                div(),
+            )
+            .on_click(cx.listener(|s, _, _, cx| {
+                s.prefs.home.layout = Default::default();
+                s.save_home(cx);
+            })),
+        );
         if !self.prefs.home.dismissed.is_empty() {
             let mut dismissed = group();
             for (index, title) in self.prefs.home.dismissed.iter().enumerate() {
@@ -158,10 +171,17 @@ impl Library {
                     })),
                 );
             }
-            body = body
-                .child(heading("Removed from Continue Watching"))
-                .child(dismissed);
+            shortcuts = shortcuts.child(section_card("Removed from Continue Watching", dismissed));
         }
-        body
+        div()
+            .w_full()
+            .child(label("Changes apply to this profile.", 14., META).mb_4())
+            .child(settings_columns(
+                wide,
+                section_stack()
+                    .child(section_card("Shelves", shelves))
+                    .child(reset),
+                shortcuts,
+            ))
     }
 }

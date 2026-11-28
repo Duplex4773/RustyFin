@@ -369,8 +369,9 @@ impl Native {
             Ok(Status {
                 ready: self.started,
                 video_presented: self.video_presented,
-                position: self.engine.GetCurrentTime(),
+                position,
                 duration: self.engine.GetDuration(),
+                buffered_end: self.buffered_end(position).unwrap_or(0.),
                 paused,
                 ended: self.engine.IsEnded().as_bool(),
             })
@@ -401,20 +402,23 @@ impl Native {
         }
     }
 
+    fn buffered_end(&self, position: f64) -> Option<f64> {
+        unsafe {
+            self.engine.GetBuffered().ok().and_then(|ranges| {
+                (0..ranges.GetLength()).find_map(|i| {
+                    let (start, end) = (ranges.GetStart(i).ok()?, ranges.GetEnd(i).ok()?);
+                    (position >= start && position <= end && end.is_finite()).then_some(end)
+                })
+            })
+        }
+    }
+
     pub(super) fn performance_counters(&self) -> (Option<u32>, Option<u32>, Option<f64>) {
         if !self.started {
             return (None, None, None);
         }
-        let buffered = unsafe {
-            let position = self.engine.GetCurrentTime();
-            self.engine.GetBuffered().ok().and_then(|ranges| {
-                (0..ranges.GetLength()).find_map(|i| {
-                    let (start, end) = (ranges.GetStart(i).ok()?, ranges.GetEnd(i).ok()?);
-                    (position >= start && position <= end && end.is_finite())
-                        .then_some(end - position)
-                })
-            })
-        };
+        let position = unsafe { self.engine.GetCurrentTime() };
+        let buffered = self.buffered_end(position).map(|end| end - position);
         (
             self.frame_count(MF_MEDIA_ENGINE_STATISTIC_FRAMES_RENDERED),
             self.frame_count(MF_MEDIA_ENGINE_STATISTIC_FRAMES_DROPPED),

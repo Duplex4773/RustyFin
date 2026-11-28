@@ -147,7 +147,7 @@ impl Library {
                                     div()
                                         .h_full()
                                         .w(relative(progress.clamp(0., 1.)))
-                                        .bg(rgb(LIME)),
+                                        .bg(rgb(TEXT)),
                                 ),
                         )
                     });
@@ -163,10 +163,10 @@ impl Library {
                     .px_2()
                     .rounded_md()
                     .border_1()
-                    .border_color(rgba(if playing { 0xdafe675c } else { 0x00000000 }))
-                    .when(playing, |d| d.bg(rgba(0xdafe6718)))
+                    .border_color(rgba(if playing { 0xf2f6ff5c } else { 0x00000000 }))
+                    .when(playing, |d| d.bg(rgba(0xf2f6ff18)))
                     .hover(|d| d.bg(rgba(0xffffff19)))
-                    .focus(|d| d.bg(rgba(0x252e28e8)).border_color(rgb(LIME)))
+                    .focus(|d| d.bg(rgba((ACTIVE << 8) | 0xe8)).border_color(rgb(FOCUS)))
                     .when(i == initial, |d| self.initial_menu_button(d))
                     .child(image)
                     .child(
@@ -181,7 +181,7 @@ impl Library {
                                 } else {
                                     None
                                 },
-                                |d, state| d.child(label(state, 11., LIME)),
+                                |d, state| d.child(label(state, 11., BODY)),
                             )
                             .child(title(item.name.clone(), 15.).truncate())
                             .when(!detail.is_empty(), |d| {

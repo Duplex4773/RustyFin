@@ -45,9 +45,7 @@ fn main() -> anyhow::Result<()> {
             gpui_component::init(cx);
             ui::bind_player_keys(cx);
             Theme::change(ThemeMode::Dark, None, cx);
-            // Browsing pages paint their own background. Leave the root of GPUI's
-            // topmost composition layer clear so it can overlay the video child.
-            Theme::global_mut(cx).background = transparent_black();
+            ui::theme::apply(cx);
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();

@@ -323,59 +323,60 @@ impl Library {
     pub(super) fn playback_settings(&self, cx: &mut Context<Self>) -> Div {
         use super::settings::{group, rows, toggle};
         use crate::preferences::Preferences;
-        type Flag = fn(&mut Preferences) -> &mut bool;
-        let flags: [(_, _, _, _, Flag); 6] = [
-            (
-                PLAY,
-                "Play next episode",
-                "Continue automatically when an episode ends",
-                self.prefs.autoplay,
-                |p| &mut p.autoplay,
-            ),
-            (
-                "\u{e8d6}",
-                "Audio passthrough",
-                "Send supported audio formats directly to the receiver",
-                self.prefs.passthrough,
-                |p| &mut p.passthrough,
-            ),
-            (
-                "\u{e7f4}",
-                "Match fullscreen refresh rate",
-                "Match the display refresh rate to the video",
-                self.prefs.match_refresh,
-                |p| &mut p.match_refresh,
-            ),
-            (
-                NEXT,
-                "Skip intros and credits",
-                "Use the skip segments provided by Jellyfin",
-                self.prefs.auto_skip,
-                |p| &mut p.auto_skip,
-            ),
-            (
-                VIDEO,
-                "Use Windows Dolby Vision output",
-                "Use the Windows renderer for compatible profiles in HDR. Profile 7 FEL uses mpv.",
-                self.prefs.windows_dolby,
-                |p| &mut p.windows_dolby,
-            ),
-            (
-                VIDEO,
-                "Use Dolby Vision metadata for Profile 7 MEL",
-                "The Windows renderer converts MEL to Profile 8.1. Turn off to use the HDR10 base layer.",
-                self.prefs.mel_to_81,
-                |p| &mut p.mel_to_81,
-            ),
-        ];
-        let playback = rows(flags.map(|(glyph, name, description, on, flag)| {
+        let setting = |glyph, name, description, on, flag: fn(&mut Preferences) -> &mut bool| {
             self.settings_row(cx, name, glyph, name, description, toggle(on))
                 .on_click(cx.listener(move |s, _, _, cx| {
                     let value = flag(&mut s.prefs);
                     *value = !*value;
                     s.save_preferences(cx);
                 }))
-        }));
+        };
+        let playback = rows([
+            setting(
+                PLAY,
+                "Play next episode",
+                "Continue automatically when an episode ends",
+                self.prefs.autoplay,
+                |p| &mut p.autoplay,
+            ),
+            setting(
+                NEXT,
+                "Skip intros and credits",
+                "Use the skip segments provided by Jellyfin",
+                self.prefs.auto_skip,
+                |p| &mut p.auto_skip,
+            ),
+        ]);
+        let video_output = rows([
+            setting(
+                "\u{e7f4}",
+                "Match fullscreen refresh rate",
+                "Match the display refresh rate to the video",
+                self.prefs.match_refresh,
+                |p| &mut p.match_refresh,
+            ),
+            setting(
+                VIDEO,
+                "Use Windows Dolby Vision output",
+                "Use the Windows renderer for compatible profiles in HDR. Profile 7 FEL uses mpv.",
+                self.prefs.windows_dolby,
+                |p| &mut p.windows_dolby,
+            ),
+            setting(
+                VIDEO,
+                "Use Dolby Vision metadata for Profile 7 MEL",
+                "The Windows renderer converts MEL to Profile 8.1. Turn off to use the HDR10 base layer.",
+                self.prefs.mel_to_81,
+                |p| &mut p.mel_to_81,
+            ),
+        ]);
+        let passthrough = setting(
+            "\u{e8d6}",
+            "Audio passthrough",
+            "Send supported audio formats directly to the receiver",
+            self.prefs.passthrough,
+            |p| &mut p.passthrough,
+        );
         let mut sizes = choices().child(label("Subtitle size", 15., TEXT));
         for (i, n) in [24, 30, 36, 42, 48].into_iter().enumerate() {
             sizes = sizes.child(
@@ -414,7 +415,7 @@ impl Library {
                 })),
             );
         }
-        let mut audio = group().child(
+        let mut audio = div().flex().flex_col().gap(px(2.)).child(
             self.settings_row(
                 cx,
                 "normalize-pcm",
@@ -466,18 +467,21 @@ impl Library {
                 })),
             );
         }
-        let options = |choices: Div| {
-            choices
-                .min_h(px(54.))
-                .p_3()
-                .bg(rgb(SURFACE))
-                .rounded(px(4.))
-        };
-        div()
-            .child(playback)
-            .child(super::settings::heading("Subtitles"))
-            .child(group().child(options(sizes)).child(options(style)))
-            .child(super::settings::heading("Audio output"))
-            .child(group().child(options(channels)).child(audio))
+        let options = |choices: Div| choices.min_h(px(54.)).px(px(13.)).py_3();
+        use super::settings::{section_card, section_stack};
+        section_stack()
+            .child(section_card("Playback", playback))
+            .child(section_card("Video output", video_output))
+            .child(section_card(
+                "Subtitles",
+                group().child(options(sizes)).child(options(style)),
+            ))
+            .child(section_card(
+                "Audio output",
+                group()
+                    .child(passthrough)
+                    .child(options(channels))
+                    .child(audio),
+            ))
     }
 }

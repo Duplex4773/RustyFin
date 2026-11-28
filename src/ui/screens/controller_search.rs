@@ -153,7 +153,7 @@ impl Library {
                     .items_center()
                     .justify_center()
                     .rounded_md()
-                    .bg(rgb(if selected { LIME } else { ACTIVE }))
+                    .bg(rgb(if selected { FOCUS } else { ACTIVE }))
                     .text_color(rgb(if selected { BG } else { TEXT }))
                     .font_weight(FontWeight::SEMIBOLD)
                     .cursor_pointer()
@@ -167,7 +167,7 @@ impl Library {
             }
             panel = panel.child(row);
         }
-        div().px(px(PAD)).pb_2().flex_none().child(panel)
+        div().px(px(CONTENT_GUTTER)).pb_2().flex_none().child(panel)
     }
 }
 

@@ -1,5 +1,6 @@
 use super::*;
 use crate::jellyfin::{LIBRARY_PAGE_SIZE, catalog_initial};
+use std::{cell::Cell, rc::Rc};
 use std::{collections::BTreeMap, ops::Range};
 
 pub(super) struct CatalogWall {
@@ -18,6 +19,7 @@ pub(super) struct CatalogWall {
     pub page_error: Option<String>,
     pub index_error: Option<String>,
     pub rail_focus: Option<char>,
+    pub selected_bounds: Rc<Cell<Option<(usize, Bounds<Pixels>)>>>,
 }
 
 impl Default for CatalogWall {
@@ -38,6 +40,7 @@ impl Default for CatalogWall {
             page_error: None,
             index_error: None,
             rail_focus: None,
+            selected_bounds: Default::default(),
         }
     }
 }
@@ -63,6 +66,7 @@ impl CatalogWall {
     // Preserve the viewport while refreshing membership or metadata.
     pub fn invalidate(&mut self) {
         self.suspend();
+        self.selected_bounds.set(None);
         self.items.clear();
         self.letters.clear();
         self.scanned = 0;
@@ -119,7 +123,7 @@ impl CatalogWall {
         }
     }
 
-    fn receive(&mut self, offset: usize, page: Page, alphabetical: bool) {
+    fn receive(&mut self, offset: usize, page: Page, alphabetical: bool, selection: usize) {
         self.needs_prefetch = true;
         let total = page.total_record_count;
         if self.total.is_some_and(|old| old != total) {
@@ -143,7 +147,8 @@ impl CatalogWall {
             let near = self.near_range();
             let keep =
                 near.start.saturating_sub(2 * LIBRARY_PAGE_SIZE)..near.end + 2 * LIBRARY_PAGE_SIZE;
-            self.items.retain(|index, _| keep.contains(index));
+            self.items
+                .retain(|index, _| *index == selection || keep.contains(index));
         }
     }
 
@@ -167,6 +172,15 @@ impl CatalogWall {
 }
 
 impl Screen {
+    pub(super) fn spotlight(&self) -> bool {
+        matches!(self, Self::Library(Tab::Collections, _))
+            || matches!(self, Self::Library(Tab::Browse, q) if q.favorites || q.kind == "BoxSet")
+    }
+
+    pub(super) fn catalog_preview(&self) -> bool {
+        matches!(self, Self::Library(Tab::Browse | Tab::Collections, _))
+    }
+
     pub(super) fn alphabetical(&self) -> bool {
         matches!(self, Self::Library(tab, q) if *tab != Tab::Recommended && q.sort == "SortName" && q.initial.is_none() && (*tab != Tab::Browse || q.kind != "Folder"))
     }
@@ -207,7 +221,7 @@ impl Library {
                     wall.page_job = None;
                     match result {
                         Ok(page) => {
-                            wall.receive(offset, page, alphabetical);
+                            wall.receive(offset, page, alphabetical, s.state.selection);
                             s.state.selection = s
                                 .state
                                 .selection
@@ -388,24 +402,37 @@ mod tests {
     fn a_fast_jump_fetches_the_destination_and_accepts_short_server_pages() {
         let mut wall = CatalogWall::default();
         assert_eq!(wall.needed_offset(), Some(0));
-        wall.receive(0, page(0, 90, 4000), false);
+        wall.receive(0, page(0, 90, 4000), false, 0);
         wall.columns = 15;
         wall.visible = 3195..3270;
         assert_eq!(wall.needed_offset(), Some(3150));
-        wall.receive(3150, page(3150, 3190, 4000), false);
+        wall.receive(3150, page(3150, 3190, 4000), false, 0);
         assert_eq!(wall.needed_offset(), Some(3190));
-        wall.receive(3190, page(3190, 3280, 4000), false);
+        wall.receive(3190, page(3190, 3280, 4000), false, 0);
         assert_eq!(wall.needed_offset(), Some(3280));
         assert_eq!(wall.index_of("3210"), Some(3210));
     }
 
     #[test]
+    fn browsing_distant_pages_keeps_the_previewed_title_until_refresh() {
+        let mut wall = CatalogWall::default();
+        for offset in (0..720).step_by(90) {
+            wall.visible = offset..offset + 15;
+            wall.receive(offset, page(offset, offset + 90, 720), false, 3);
+        }
+        assert_eq!(wall.item(3).unwrap().id, "3");
+        assert!(wall.item(4).is_none());
+        wall.invalidate();
+        assert!(wall.item(3).is_none());
+    }
+
+    #[test]
     fn shrinking_a_filtered_library_discards_stale_titles_and_clamps_visible_artwork() {
         let mut wall = CatalogWall::default();
-        wall.receive(0, page(0, 90, 91), true);
+        wall.receive(0, page(0, 90, 91), true, 0);
         wall.columns = 4;
         wall.visible = 88..91;
-        wall.receive(90, page(0, 0, 2), true);
+        wall.receive(90, page(0, 0, 2), true, 0);
         assert!(wall.item(87).is_none());
         assert_eq!(wall.near_items().count(), 0);
         wall.visible = 0..2;

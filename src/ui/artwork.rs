@@ -38,6 +38,12 @@ pub(super) fn background(item: &Item) -> Option<Art> {
 }
 
 impl Artwork {
+    pub fn detail_has_backdrop(&self, item: &Item, w: &Window) -> bool {
+        item.art(ArtKind::Backdrop).is_some()
+            && super::screens::marquee_art(item, w)
+                .is_some_and(|art| !matches!(self.entries.get(&art), Some(None)))
+    }
+
     pub fn get(&self, key: Option<Art>) -> Option<Arc<RenderImage>> {
         self.entries.get(&key?)?.as_ref().cloned()
     }
@@ -183,7 +189,7 @@ impl Library {
                 plan.extend(self.artwork.marquee.current.iter().cloned());
                 plan.extend(self.artwork.marquee.outgoing.iter().cloned());
                 // Load the first visible cards from each shelf before the off-screen cards.
-                for start in [0..5, 5..24] {
+                for start in [0..6, 6..24] {
                     for shelf in &self.shelves {
                         for item in shelf.items.iter().skip(start.start).take(start.len()) {
                             plan.extend(shelf.kind.art(item));
@@ -197,9 +203,16 @@ impl Library {
                 }
             }
             Screen::Detail(item, _) => {
+                if let Some(cover) = &self.state.catalog_cover {
+                    plan.extend(item.art(cover.kind));
+                }
                 let (layout, range, items) = self.state.similar_cards(w);
                 if matches!(item.kind.as_str(), "Movie" | "Series") {
-                    plan.extend(super::screens::marquee_art(item, w));
+                    if self.artwork.detail_has_backdrop(item, w) {
+                        plan.extend(super::screens::marquee_art(item, w));
+                    } else {
+                        plan.extend(item.art(ArtKind::Poster));
+                    }
                 } else {
                     plan.extend(background(item));
                 }
@@ -234,10 +247,19 @@ impl Library {
             Screen::Library(..) => {
                 let poster = super::screens::CatalogGrid::for_wall(
                     w,
-                    self.state.screen.alphabetical(),
+                    &self.state.screen,
                     self.prefs.poster_size,
                 )
                 .poster;
+                if self.state.screen.catalog_preview()
+                    && let Some(item) = self.state.wall.item(self.state.selection)
+                {
+                    plan.extend(super::screens::preview_art(item, &self.state.screen, w));
+                    if self.state.screen.spotlight() {
+                        plan.extend(item.art(ArtKind::Logo));
+                    }
+                    plan.extend(item.art(poster));
+                }
                 plan.extend(self.state.wall.near_items().filter_map(|i| i.art(poster)));
             }
             Screen::Search(_) => {

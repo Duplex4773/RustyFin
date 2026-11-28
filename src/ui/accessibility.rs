@@ -468,6 +468,19 @@ pub(super) fn heading(view: Div, name: SharedString, level: usize) -> Div {
         .child(marker(name.into(), node, None, Target::None, false))
 }
 
+pub(super) fn readable_text(view: Div, id: &'static str, text: &str, announce: bool) -> Div {
+    if !active() {
+        return view;
+    }
+    let mut node = Node::new(Role::Label);
+    node.set_value(text);
+    if announce {
+        node.set_live(Live::Polite);
+    }
+    view.relative()
+        .child(marker(id.into(), node, None, Target::None, false))
+}
+
 fn title_name(item: &crate::jellyfin::Item) -> SharedString {
     let caption = item.caption();
     if caption.is_empty() {

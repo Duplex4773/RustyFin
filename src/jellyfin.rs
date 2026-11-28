@@ -77,6 +77,10 @@ pub struct Item {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trickplay: Option<trickplay::Manifest>,
     pub people: Option<Vec<Person>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub studios: Option<Vec<Studio>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
     pub current_program: Option<Box<Item>>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
@@ -123,6 +127,12 @@ pub struct UserData {
     pub playback_position_ticks: Option<u64>,
     pub played: Option<bool>,
     pub is_favorite: Option<bool>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct Studio {
+    pub name: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

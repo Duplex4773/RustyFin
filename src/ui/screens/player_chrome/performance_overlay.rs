@@ -239,10 +239,7 @@ impl Library {
             .filter(|shader| **shader != Shader::Off)
             .zip(p.shader_status());
         div()
-            .absolute()
-            .left(px(rail(width).0))
-            .top(px(70.))
-            .w(px((width - 2. * rail(width).0).min(650.)))
+            .w(px((width - 2. * OSD_MARGIN_X).min(650.)))
             .p_2()
             .rounded(px(12.))
             .border_1()

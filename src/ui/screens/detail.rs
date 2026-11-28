@@ -1,9 +1,5 @@
 use super::*;
 
-pub(super) fn detail_inset(w: &Window) -> f32 {
-    (f32::from(w.viewport_size().width) * 0.03).clamp(20., 54.)
-}
-
 pub(super) fn detail_tool(item: &Item, name: &'static str, glyph: &'static str) -> Stateful<Div> {
     if matches!(item.kind.as_str(), "Movie" | "Series") {
         pill(name, name, Some(glyph), false)
@@ -37,8 +33,9 @@ impl Library {
     pub(super) fn cinematic_header(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
         let height = (f32::from(w.viewport_size().height) * 0.54).clamp(280., 760.);
-        let inset = detail_inset(w);
-        let compact = height < 340.;
+        let has_backdrop = self.artwork.detail_has_backdrop(item, w);
+        let inset = CONTENT_GUTTER;
+        let compact = !has_backdrop || height < 340.;
         let is_series = item.kind == "Series";
         let target = self.state.series_target.as_ref();
         let mut meta = Vec::new();
@@ -75,33 +72,76 @@ impl Library {
                 .items_center()
                 .gap_2()
                 .when(!meta.is_empty(), |d| {
-                    d.child(label(meta.join("   ·   "), 14., TEXT).min_w_0().truncate())
+                    d.child(label(meta.join("   ·   "), 14., BODY).min_w_0().truncate())
                 })
                 .children(scores)
         });
 
         let mut actions = div().flex().items_center().flex_wrap().gap_2();
+        let mut episode_context = None;
         if let Some(ep) = target.filter(|_| is_series) {
+            let (time, progress) = episode_timing(ep);
+            let caption = match time {
+                Some(time) => format!("{} · {time}", ep.name),
+                None => ep.name.clone(),
+            };
+            let play_label = episode_play_label(ep);
+            let button = named_pill(
+                "resume-series",
+                play_label.clone(),
+                Some(PLAY),
+                PillStyle::Primary,
+                format!("{play_label}, {caption}"),
+            );
+            episode_context = Some(
+                div()
+                    .max_w_full()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when_some(progress, |row, fraction| {
+                        row.child(
+                            div()
+                                .w(px(56.))
+                                .h(px(4.))
+                                .flex_none()
+                                .rounded_full()
+                                .overflow_hidden()
+                                .bg(rgba(0xffffff55))
+                                .child(div().h_full().w(relative(fraction)).bg(rgb(TEXT))),
+                        )
+                    })
+                    .child(label(caption, 14., BODY).min_w_0().truncate()),
+            );
             let ep = ep.clone();
             actions = actions.child(
-                pill("resume-series", episode_play_label(&ep), Some(PLAY), true)
+                button
                     .h(px(42.))
                     .px_5()
-                    .bg(rgb(LIME))
                     .when(
                         self.keyboard
                             && self.focus.is_focused(w)
                             && self.state.series_focus == SeriesFocus::Hero,
-                        |b| b.border_2().border_color(rgb(TEXT)),
+                        |b| b.border_2().border_color(rgb(MUTED)),
                     )
                     .on_click(cx.listener(move |s, _, w, cx| s.play_item(ep.clone(), w, cx))),
             );
+        } else if is_series && self.state.series_target_error {
+            actions = actions
+                .child(
+                    label("Next Up unavailable", 14., MUTED)
+                        .relative()
+                        .children(accessibility::status("Next Up unavailable")),
+                )
+                .child(
+                    pill("retry-next-up", "Retry Next Up", Some(REFRESH), false)
+                        .on_click(cx.listener(|s, _, w, cx| s.load_series_target(false, w, cx))),
+                );
         } else if !is_series {
             actions = actions.child(
                 self.play_button(item, cx)
-                    .bg(rgb(LIME))
                     .when(self.keyboard && self.focus.is_focused(w), |b| {
-                        b.border_2().border_color(rgb(TEXT))
+                        b.border_2().border_color(rgb(MUTED))
                     }),
             );
             let sources = item.media_sources.as_deref().unwrap_or_default();
@@ -138,21 +178,15 @@ impl Library {
             }
         }
         actions = actions.child(
-            pill(
-                "detail-more",
-                "More",
-                Some("\u{e712}"),
-                self.state.detail_panel == Some(DetailPanel::More),
-            )
-            .track_focus(&self.more_focus)
-            .on_click(cx.listener(|s, _, w, cx| s.toggle_detail_panel(DetailPanel::More, w, cx))),
+            pill("detail-more", "More", Some("\u{e712}"), PillStyle::Glass)
+                .track_focus(&self.more_focus)
+                .on_click(
+                    cx.listener(|s, _, w, cx| s.toggle_detail_panel(DetailPanel::More, w, cx)),
+                ),
         );
         let overview = item.overview.as_deref().unwrap_or("").trim();
         let copy = div()
-            .absolute()
-            .left(px(inset))
-            .right(px(inset))
-            .bottom(px(if compact { 16. } else { 26. }))
+            .min_w_0()
             .flex()
             .flex_col()
             .items_start()
@@ -160,45 +194,95 @@ impl Library {
             .child(self.wordmark(
                 item,
                 (width * 0.4).clamp(210., 470.),
-                (height * 0.22).clamp(50., 145.),
+                if has_backdrop {
+                    (height * 0.22).clamp(50., 145.)
+                } else {
+                    64.
+                },
             ))
             .children(metadata)
             .when(
                 !overview.is_empty() && self.state.detail_panel != Some(DetailPanel::More),
                 |d| {
                     d.child(
-                        label(
-                            overview.to_owned(),
-                            if compact { 14. } else { 16. },
-                            0xd8dadd,
-                        )
-                        .max_w(px((width * 0.54).clamp(430., 740.)))
-                        .line_height(px(if compact { 19. } else { 22. }))
-                        .line_clamp(2),
+                        label(overview.to_owned(), if compact { 14. } else { 16. }, BODY)
+                            .max_w(px((width * 0.54).clamp(430., 740.)))
+                            .line_height(px(if compact { 19. } else { 22. }))
+                            .line_clamp(2),
                     )
                 },
             )
-            .child(actions);
-        let hero = div()
-            .relative()
-            .w_full()
-            .h(px(height + NAV_HEIGHT))
-            .overflow_hidden()
-            .bg(rgb(0x101413))
-            .child(self.marquee_backdrop(item, w, size(px(width), px(height + NAV_HEIGHT))))
-            .child(coat(90., 0x080a0cce, 0x080a0c00, 0., 0.73))
-            .child(coat(180., 0x0e0f1200, 0x0e0f12ff, 0.34, 1.))
-            .child(copy)
-            .child(
-                div()
-                    .absolute()
-                    .left(px(inset))
-                    .top(px(NAV_CLEARANCE))
-                    .child(
-                        artwork_control(glyph_button("Back", BACK))
-                            .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
-                    ),
-            );
+            .child(actions)
+            .children(episode_context);
+        let back = glyph_button("Back", BACK)
+            .size(px(36.))
+            .rounded_full()
+            .bg(rgba(GLASS_WHITE_SOFT))
+            .border_1()
+            .border_color(rgba(GLASS_EDGE))
+            .hover(|d| d.bg(rgba(GLASS_FILL)))
+            .on_click(cx.listener(|s, _, w, cx| s.back(w, cx)));
+        let hero = if has_backdrop {
+            div()
+                .relative()
+                .w_full()
+                .h(px(height + NAV_HEIGHT))
+                .overflow_hidden()
+                .bg(rgb(BG))
+                .child(self.marquee_backdrop(item, w, size(px(width), px(height + NAV_HEIGHT))))
+                .child(hero_scrim())
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(inset))
+                        .right(px(inset))
+                        .bottom(px(if compact { 16. } else { 26. }))
+                        .flex()
+                        .items_end()
+                        .gap_4()
+                        .children(
+                            self.detail_catalog_poster(item, (height * 0.32).clamp(78., 174.)),
+                        )
+                        .child(copy),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(inset))
+                        .top(px(NAV_HEIGHT + NAV_TOP_INSET + 24.))
+                        .child(back),
+                )
+        } else {
+            div()
+                .w_full()
+                .pt(px(NAV_HEIGHT + NAV_TOP_INSET + 24.))
+                .px(px(inset))
+                .pb_4()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_3()
+                .child(back)
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap_4()
+                        .children(self.detail_catalog_poster(item, 104.).or_else(|| {
+                            self.artwork.get(item.art(ArtKind::Poster)).map(|poster| {
+                                div().flex_none().child(
+                                    img(poster)
+                                        .w(px(104.))
+                                        .h(px(156.))
+                                        .rounded_md()
+                                        .object_fit(ObjectFit::Cover),
+                                )
+                            })
+                        }))
+                        .child(copy),
+                )
+        };
         let mut head = div().child(hero);
         match self.state.detail_panel {
             Some(DetailPanel::More) => {
@@ -243,83 +327,7 @@ impl Library {
             }
             None => {}
         }
-        if let Some(ep) = target.filter(|_| is_series) {
-            head = head.child(self.resume_episode(ep, inset, cx));
-        }
         head
-    }
-
-    fn resume_episode(&self, ep: &Item, inset: f32, cx: &mut Context<Self>) -> Stateful<Div> {
-        let (time, progress) = episode_timing(ep);
-        let mut still = div()
-            .relative()
-            .w(px(144.))
-            .h(px(81.))
-            .flex_none()
-            .rounded_md()
-            .overflow_hidden()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgb(ACTIVE));
-        if let Some(image) = self.artwork.get(ep.landscape()) {
-            still = still.child(
-                img(image)
-                    .size_full()
-                    .rounded_md()
-                    .object_fit(ObjectFit::Cover),
-            );
-        } else {
-            still = still.child(icon(VIDEO, 24.).text_color(rgb(MUTED)));
-        }
-        if let Some(fraction) = progress {
-            still = still.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .w_full()
-                    .h(px(4.))
-                    .bg(rgba(0xffffff55))
-                    .child(div().h_full().w(relative(fraction)).bg(rgb(LIME))),
-            );
-        }
-        let numbers = match (ep.parent_index_number, ep.index_number) {
-            (Some(s), Some(e)) => Some(format!("Season {s} · Episode {e}")),
-            (_, Some(e)) => Some(format!("Episode {e}")),
-            _ => None,
-        };
-        let caption = [numbers, time]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("   ·   ");
-        let target = ep.clone();
-        div()
-            .id("featured-episode")
-            .mx(px(inset))
-            .mt_1()
-            .mb_3()
-            .p_2()
-            .flex()
-            .items_center()
-            .gap_4()
-            .rounded_lg()
-            .bg(rgb(SURFACE))
-            .cursor_pointer()
-            .hover(|d| d.bg(rgb(ACTIVE)))
-            .child(still)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(title(ep.name.clone(), 21.).truncate())
-                    .when(!caption.is_empty(), |d| d.child(label(caption, 14., MUTED))),
-            )
-            .child(icon(PLAY, 16.).mr_3())
-            .on_click(cx.listener(move |s, _, w, cx| s.play_item(target.clone(), w, cx)))
     }
 
     fn toggle_detail_panel(&mut self, panel: DetailPanel, w: &mut Window, cx: &mut Context<Self>) {
@@ -434,14 +442,7 @@ impl Library {
             }
             (SeriesFocus::Hero, "down") if !self.state.seasons.is_empty() => {
                 self.state.series_focus = SeriesFocus::Seasons;
-                if let Some(b) = self.state.scroll.bounds_for_item(1) {
-                    let h = self.state.scroll.bounds();
-                    if b.top() + self.state.scroll.offset().y > h.bottom() {
-                        self.state
-                            .scroll
-                            .set_offset(point(px(0.), h.bottom() - b.top() - px(10.)));
-                    }
-                }
+                self.state.reveal_row(0);
             }
             (SeriesFocus::Seasons, "up") | (SeriesFocus::Episodes, "up")
                 if self.state.series_focus == SeriesFocus::Seasons || self.state.selection == 0 =>
@@ -456,7 +457,7 @@ impl Library {
                 if self.state.series_focus == SeriesFocus::Hero {
                     self.state.scroll.set_offset(point(px(0.), px(0.)));
                 } else {
-                    self.state.scroll.scroll_to_item(0);
+                    self.state.reveal_row(0);
                 }
             }
             (SeriesFocus::Seasons, "left" | "right") => {

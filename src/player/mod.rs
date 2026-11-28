@@ -122,6 +122,7 @@ pub struct Status {
     pub ended: bool,
     pub position: f64,
     pub duration: f64,
+    pub buffered_end: f64,
 }
 
 enum Engine {

@@ -80,7 +80,8 @@ impl Library {
             .track_scroll(&self.state.scroll)
             .size_full()
             .overflow_y_scroll()
-            .p_5()
+            .py_5()
+            .px(px(CONTENT_GUTTER))
             .child(page_heading("Explore", 26.))
             .child(self.catalog_sources(false, cx));
         if self.explore.client.is_none() {

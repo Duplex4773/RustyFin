@@ -1,11 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 
-const GUTTER: f32 = 32.;
-const GAP: f32 = 12.;
-const CHARCOAL: u32 = 0x101413;
 const GLASS_INSET: f32 = 14.;
-const PIN_WASH_SPAN: f32 = 0.08;
 
 fn wash_start(shelves: &[Shelf], row: usize) -> f32 {
     let Some(visible) = shelves.get(..=row) else {
@@ -18,8 +14,8 @@ fn wash_start(shelves: &[Shelf], row: usize) -> f32 {
         return 1.;
     }
     match (visible[0].kind, row) {
-        (ShelfKind::Continue, 0) => 0.42,
-        (ShelfKind::Continue, _) | (_, 0) => 0.74,
+        (_, 0) => 0.,
+        (ShelfKind::Continue, _) => 0.64,
         _ => 0.90,
     }
 }
@@ -36,7 +32,7 @@ fn frosted_panel(texture: Div, tint: Rgba, center: f32, card_width: f32) -> Div 
         .px(px(GLASS_INSET))
         .py(px(12.))
         .child(texture)
-        .child(coat(112., 0xe5ebe50c, 0x11161916, 0., 1.).rounded(px(16.)))
+        .child(coat(112., 0xe3eaf50c, 0x11161916, 0., 1.).rounded(px(16.)))
         .child(
             div()
                 .absolute()
@@ -58,7 +54,7 @@ fn frosted_panel(texture: Div, tint: Rgba, center: f32, card_width: f32) -> Div 
                 .inset_0()
                 .rounded(px(16.))
                 .border_1()
-                .border_color(rgba(0xe1e9e41c)),
+                .border_color(rgba(REST_EDGE)),
         )
         .child(
             div()
@@ -69,19 +65,21 @@ fn frosted_panel(texture: Div, tint: Rgba, center: f32, card_width: f32) -> Div 
                 .h(px(1.))
                 .bg(linear_gradient(
                     90.,
-                    linear_color_stop(rgba(0xe9eee729), 0.),
-                    linear_color_stop(rgba(0xe9eee700), 1.),
+                    linear_color_stop(rgba(0xe7edfa29), 0.),
+                    linear_color_stop(rgba(0xe7edfa00), 1.),
                 )),
         )
 }
 
 fn marquee_size(w: &Window) -> Size<Pixels> {
     let width = w.viewport_size().width;
-    // Keep Continue Watching in view on short windows, and let the banner grow on a TV.
-    let viewport = (w.viewport_size().height - px(NAV_HEIGHT)).max(px(0.));
-    let extra = ((viewport - px(720.)) * 0.25).clamp(px(0.), viewport * 0.11);
-    let height = (viewport * 0.62 + extra).clamp(px(286.), (width * 0.82).max(px(286.)));
-    size(width, height + px(NAV_HEIGHT))
+    // Leave space for two shelf headings, both caption lines, and the artwork.
+    let shelf_space = CONTINUE_WIDTH * 9. / 16. + HOME_POSTER_WIDTH * 1.5 + 244.;
+    let viewport = w.viewport_size().height;
+    let height = (viewport * HOME_HERO_FRACTION)
+        .min(viewport - px(shelf_space))
+        .max(px(238.));
+    size(width, height)
 }
 
 pub(in crate::ui) fn marquee_art(item: &Item, w: &Window) -> Option<crate::jellyfin::Art> {
@@ -193,7 +191,12 @@ fn circle(
 impl Library {
     fn customise_home_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         self.page_button(
-            pill("customise-home", "Customise Home", Some("\u{e713}"), false).bg(rgba(0x181d1bea)),
+            artwork_control(pill(
+                "customise-home",
+                "Customise Home",
+                Some("\u{e713}"),
+                false,
+            )),
             cx,
         )
         .on_click(cx.listener(|s, _, w, cx| {
@@ -258,7 +261,7 @@ impl Library {
                 .w(fit.size.width)
                 .h(fit.size.height)
                 .child(img(image).size_full().object_fit(ObjectFit::Contain))
-                .child(coat(90., 0x101413ff, 0x10141300, 0., 0.18))
+                .child(coat(90., (BG << 8) | 255, BG << 8, 0., 0.18))
         } else {
             // Center the scene. Cap vertical cropping on shallow or ultrawide windows.
             let width = banner.width.min(banner.height * (aspect * 1.42));
@@ -273,8 +276,8 @@ impl Library {
                 .child(img(image).size_full().object_fit(ObjectFit::Cover))
                 .when(margin > px(1.), |d| {
                     let feather = (margin / width).clamp(0.01, 0.15);
-                    d.child(coat(90., 0x101413ff, 0x10141300, 0., feather))
-                        .child(coat(90., 0x10141300, 0x101413ff, 1. - feather, 1.))
+                    d.child(coat(90., (BG << 8) | 255, BG << 8, 0., feather))
+                        .child(coat(90., BG << 8, (BG << 8) | 255, 1. - feather, 1.))
                 })
         }
     }
@@ -282,7 +285,7 @@ impl Library {
     fn marquee_play(&self, item: &Item, cx: &mut Context<Self>) -> Stateful<Div> {
         if !item.playable() {
             let show = item.clone();
-            return pill("play-featured", "View show", Some(NEXT), true)
+            return pill("play-featured", "View show", Some(NEXT), PillStyle::Primary)
                 .h(px(40.))
                 .on_click(cx.listener(move |s, _, w, cx| s.open_item(show.clone(), w, cx)));
         }
@@ -301,10 +304,8 @@ impl Library {
                 .items_center()
                 .gap_2()
                 .rounded_full()
-                .bg(rgb(0xf8f8f6))
-                .text_color(rgb(0x101413))
                 .cursor_pointer()
-                .hover(|d| d.bg(rgb(0xe2e5df)))
+                .map(primary_action)
                 .child(icon(PLAY, 14.))
                 .when_some(duration, |d, total| {
                     d.child(
@@ -312,13 +313,13 @@ impl Library {
                             .w(px(36.))
                             .h(px(5.))
                             .rounded_full()
-                            .bg(rgb(0xc3c6c3))
+                            .bg(rgb(0xbac0ca))
                             .child(
                                 div()
                                     .h_full()
                                     .w(relative(position as f32 / total as f32))
                                     .rounded_full()
-                                    .bg(rgb(0x151916)),
+                                    .bg(rgb(BG)),
                             ),
                     )
                 })
@@ -326,19 +327,19 @@ impl Library {
                     label(
                         duration.map_or_else(
                             || action.to_owned(),
-                            |t| format!("{} min left", (t - position).div_ceil(600_000_000)),
+                            |t| format!("Resume · {}m left", (t - position).div_ceil(600_000_000)),
                         ),
                         14.,
-                        0x101413,
+                        BG,
                     )
-                    .font_weight(FontWeight::SEMIBOLD),
+                    .font_weight(FontWeight::BOLD),
                 ),
             format!("{action} {}", item.name),
         )
         .on_click(cx.listener(move |s, _, w, cx| s.play_item(target.clone(), w, cx)))
     }
 
-    fn marquee_pagination(&self, cx: &mut Context<Self>) -> Div {
+    fn marquee_pagination(&self, align_right: bool, cx: &mut Context<Self>) -> Div {
         let mut controls = div()
             .flex()
             .items_center()
@@ -377,14 +378,10 @@ impl Library {
                         .hover(|d| d.bg(rgba(0xffffff24)))
                         .child(
                             div()
-                                .w(px(if active { 22. } else { 7. }))
-                                .h(px(7.))
+                                .w(px(if active { 16. } else { 6. }))
+                                .h(px(6.))
                                 .rounded_full()
-                                .bg(if active {
-                                    rgba(0xfffffff2)
-                                } else {
-                                    rgba(0xffffffaa)
-                                }),
+                                .bg(if active { rgb(TEXT) } else { rgba(0xffffff66) }),
                         ),
                     format!(
                         "Show {}",
@@ -401,35 +398,41 @@ impl Library {
             .right_0()
             .flex()
             .justify_center()
+            .when(align_right, |d| d.justify_end().pr(px(12.)))
             .child(controls)
     }
 
-    fn marquee(&self, item: &Item, wash_end: f32, w: &Window, cx: &mut Context<Self>) -> Div {
+    fn marquee(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
         let banner = marquee_size(w);
         let width = f32::from(banner.width);
         let height = f32::from(banner.height);
-        let inset = (width * 0.028).clamp(20., 40.);
+        let compact = height < 340.;
+        let inset = CONTENT_GUTTER;
         let text_width = (width - 2. * inset).min((width * 0.55).max(400.));
         let text = item.series_name.as_ref().unwrap_or(&item.name);
         let font_size = (width * 0.058)
-            .clamp(33., 80.)
+            .clamp(33., if compact { 38. } else { 80. })
             .min(text_width / (text.chars().count().max(1) as f32 * 0.52))
             .max(28.);
         let wordmark = self
             .title_logo(
                 item,
                 (text_width * 0.82).min(400.),
-                (height * 0.18).clamp(52., 138.),
+                if compact {
+                    42.
+                } else {
+                    (height * 0.18).clamp(52., 138.)
+                },
             )
             .unwrap_or_else(|| {
                 title(text.clone(), font_size)
                     .line_height(px(font_size * 1.06))
-                    .line_clamp(2)
+                    .line_clamp(if compact { 1 } else { 2 })
             });
         let toolbar = div()
             .absolute()
             .top(px(NAV_CLEARANCE))
-            .left(px(20.))
+            .left(px(inset))
             .right(px(20.))
             .flex()
             .items_center()
@@ -442,11 +445,16 @@ impl Library {
                     .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),
             );
         let target = item.clone();
+        let details = item.clone();
         let summary = hero_summary(item);
         let copy = div()
             .absolute()
             .left(px(inset))
-            .bottom(px((height * 0.065).clamp(31., 82.)))
+            .bottom(px(if compact {
+                16.
+            } else {
+                (height * 0.065).clamp(31., 82.)
+            }))
             .w(px(text_width))
             .flex()
             .flex_col()
@@ -463,14 +471,14 @@ impl Library {
                 .on_click(cx.listener(move |s, _, w, cx| s.open_item(target.clone(), w, cx))),
             )
             .child(
-                label(hero_metadata(item), 14., 0xf2f2ee)
-                    .mt_2()
+                label(hero_metadata(item), 14., BODY)
+                    .mt(px(if compact { 4. } else { 8. }))
                     .font_weight(FontWeight::SEMIBOLD)
                     .truncate(),
             )
-            .when(!summary.is_empty(), |d| {
+            .when(!summary.is_empty() && !compact, |d| {
                 d.child(
-                    label(summary, 15., 0xe1e3df)
+                    label(summary, 15., BODY)
                         .max_w(px(text_width.min(570.)))
                         .mt_1()
                         .line_clamp(if height < 350. { 1 } else { 2 })
@@ -479,23 +487,20 @@ impl Library {
             })
             .child(
                 div()
-                    .mt_3()
+                    .mt(px(if compact { 8. } else { 12. }))
                     .flex()
                     .items_center()
                     .gap_2()
                     .child(self.marquee_play(item, cx))
-                    .child(
-                        pill("browse-marquee", "Browse library", None, false)
-                            .h(px(40.))
-                            .bg(rgba(0x181d1bd9))
-                            .on_click(cx.listener(|s, _, w, cx| {
-                                s.navigate(
-                                    Screen::Library(Tab::Browse, CatalogQuery::default()),
-                                    w,
-                                    cx,
-                                )
-                            })),
-                    ),
+                    .when(item.playable(), |row| {
+                        row.child(
+                            pill("marquee-info", "More info", None, PillStyle::Glass)
+                                .h(px(40.))
+                                .on_click(cx.listener(move |s, _, w, cx| {
+                                    s.open_item(details.clone(), w, cx)
+                                })),
+                        )
+                    }),
             );
         div()
             .relative()
@@ -503,7 +508,7 @@ impl Library {
             .h(banner.height)
             .flex_none()
             .overflow_hidden()
-            .bg(rgb(0x101413))
+            .bg(rgb(BG))
             .child(
                 div().absolute().inset_0().overflow_hidden().children(
                     self.artwork
@@ -511,22 +516,11 @@ impl Library {
                         .map(|(image, alpha)| Self::marquee_layer(image, banner).opacity(alpha)),
                 ),
             )
-            .child(coat(90., 0x070a0c65, 0x070a0c00, 0., 0.49))
-            .child(coat(180., 0x07090cc4, 0x07090c00, 0., 0.16))
-            .child(coat(180., 0x10141300, 0x101413ff, 0.44, 1.))
-            .child(
-                div()
-                    .absolute()
-                    .top(relative(0.42))
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .child(self.artwork.glass.wash(0., wash_end)),
-            )
+            .child(hero_scrim())
             .child(toolbar)
             .child(copy)
             .when(self.featured.len() > 1, |d| {
-                d.child(self.marquee_pagination(cx))
+                d.child(self.marquee_pagination(compact && width < 840., cx))
             })
     }
 
@@ -538,23 +532,18 @@ impl Library {
             .overflow_y_scroll()
             .size_full()
             .pb(px(32.))
-            .bg(rgb(CHARCOAL));
+            .when(self.featured.get(self.hero).is_some(), |d| d.bg(rgb(BG)));
         scroll.style().restrict_scroll_to_axis = Some(true);
         let mut header = div().w_full();
         let pins = self.home_shortcuts(cx);
         let unavailable = self.home.unavailable();
         if let Some(item) = self.featured.get(self.hero) {
-            let wash = wash_start(&self.shelves, 0);
-            let wash_end = if pins.is_some() {
-                wash - PIN_WASH_SPAN
-            } else {
-                wash
-            };
-            header = header.child(self.marquee(item, wash_end, w, cx));
+            header = header.child(self.marquee(item, w, cx));
         } else {
             header = header.child(
                 div()
-                    .p_5()
+                    .px(px(CONTENT_GUTTER))
+                    .py_5()
                     .child(
                         div()
                             .flex()
@@ -595,7 +584,7 @@ impl Library {
             };
             header = header.child(
                 div()
-                    .px(px(GUTTER))
+                    .px(px(CONTENT_GUTTER))
                     .py_3()
                     .flex()
                     .flex_wrap()
@@ -620,7 +609,7 @@ impl Library {
         } else {
             for (origin, host, failures) in self.home.failures() {
                 let mut notice = div()
-                    .px(px(GUTTER))
+                    .px(px(CONTENT_GUTTER))
                     .py_2()
                     .flex()
                     .items_center()
@@ -669,15 +658,23 @@ impl Library {
             header = header.child(pins);
         }
         scroll = scroll.child(header);
-        let available = f32::from(w.viewport_size().width) - 2. * GUTTER;
+        let available = f32::from(w.viewport_size().width) - 2. * CONTENT_GUTTER;
         for (row, shelf) in self.shelves.iter().enumerate() {
             let frosted = shelf.kind == ShelfKind::Continue;
-            let target = match shelf.kind {
-                ShelfKind::Continue => 238.,
-                ShelfKind::RecentTv | ShelfKind::RecentMovies => 154.,
+            let target = if frosted {
+                CONTINUE_WIDTH
+            } else {
+                HOME_POSTER_WIDTH
             };
-            let columns = ((available + GAP) / (target + GAP)).round().max(1.);
-            let width = ((available + GAP) / columns - GAP).floor();
+            let nearest = ((available + SHELF_GAP) / (target + SHELF_GAP))
+                .round()
+                .max(1.);
+            let width = ((available + SHELF_GAP) / nearest - SHELF_GAP)
+                .clamp(target - 5., target + 5.)
+                .floor();
+            let columns = ((available + SHELF_GAP) / (width + SHELF_GAP))
+                .floor()
+                .max(1.);
             let handle = &self.shelf_scroll[row];
             let mut strip = div()
                 .id(("home-shelf", row))
@@ -686,7 +683,7 @@ impl Library {
                 .overflow_hidden()
                 .w_full()
                 .flex()
-                .gap(px(GAP));
+                .gap(px(SHELF_GAP));
             let focused =
                 self.keyboard && self.focus.is_focused(w) && self.state.shelf == Some(row);
             for (i, item) in shelf.items.iter().enumerate() {
@@ -722,8 +719,8 @@ impl Library {
                 .flex()
                 .items_center()
                 .justify_between()
-                .mb(px(10.))
-                .child(section_heading(shelf.kind.title(), 26.).line_height(px(30.)));
+                .mb(px(8.))
+                .child(section_heading(shelf.kind.title(), 24.).line_height(px(28.)));
             if shelf.items.len() > columns as usize {
                 let mut arrows = div().flex().gap_2();
                 for (i, (name, code, dir)) in
@@ -735,8 +732,9 @@ impl Library {
                     arrows = arrows.child(
                         circle(("home-page", row * 2 + i), name, code, 29.).on_click(
                             move |_, _, cx| {
-                                let x = (handle.offset().x + px((width + GAP) * columns * dir))
-                                    .clamp(-handle.max_offset().width, px(0.));
+                                let x = (handle.offset().x
+                                    + px((width + SHELF_GAP) * columns * dir))
+                                .clamp(-handle.max_offset().width, px(0.));
                                 handle.set_offset(point(x, px(0.)));
                                 cx.refresh_windows();
                             },
@@ -745,7 +743,7 @@ impl Library {
                 }
                 heading = heading.child(arrows);
             }
-            let mut section = div().relative().pt(px(if row == 0 { 16. } else { 24. }));
+            let mut section = div().relative().pt(px(if row == 0 { 12. } else { 18. }));
             let start = wash_start(&self.shelves, row);
             if start < 1. {
                 let end = wash_start(&self.shelves, row + 1);
@@ -759,14 +757,14 @@ impl Library {
                 let target = index
                     .filter(|&i| i < shelf.items.len())
                     .map_or(available * 0.24, |i| {
-                        i as f32 * (width + GAP) + width / 2. + f32::from(handle.offset().x)
+                        i as f32 * (width + SHELF_GAP) + width / 2. + f32::from(handle.offset().x)
                     });
                 let center =
                     GLASS_INSET + self.shelf_light.position(target.clamp(0., available), w);
-                section = section.px(px(GUTTER - GLASS_INSET));
+                section = section.px(px(CONTENT_GUTTER - GLASS_INSET));
                 frosted_panel(self.artwork.glass.frost_layer(), tint, center, width)
             } else {
-                section = section.px(px(GUTTER));
+                section = section.px(px(CONTENT_GUTTER));
                 div().relative()
             };
             scroll = scroll.child(section.child(panel.child(heading).child(strip)));
@@ -781,7 +779,7 @@ impl Library {
                 .p_2()
                 .pl_3()
                 .rounded_lg()
-                .bg(rgb(0x1e2624))
+                .bg(rgb(ACTIVE))
                 .border_1()
                 .border_color(rgba(0xffffff2b))
                 .shadow_lg()
@@ -866,40 +864,33 @@ impl Library {
         if shortcuts.is_empty() {
             return None;
         }
-        let wash = wash_start(&self.shelves, 0);
+
         Some(
-            div()
-                .relative()
-                .child(self.artwork.glass.wash(wash - PIN_WASH_SPAN, wash))
-                .child(
-                    div()
-                        .relative()
-                        .px(px(GUTTER))
-                        .py_3()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            label("Pinned shortcuts", 14., TEXT).font_weight(FontWeight::SEMIBOLD),
+            div().relative().child(
+                div()
+                    .relative()
+                    .px(px(CONTENT_GUTTER))
+                    .py_3()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(label("Pinned shortcuts", 14., TEXT).font_weight(FontWeight::SEMIBOLD))
+                    .children(shortcuts.into_iter().map(|(id, name, query)| {
+                        self.page_button(
+                            pill(
+                                SharedString::from(format!("home-pin-{id}")),
+                                name,
+                                None,
+                                false,
+                            ),
+                            cx,
                         )
-                        .children(shortcuts.into_iter().map(|(id, name, query)| {
-                            self.page_button(
-                                pill(
-                                    SharedString::from(format!("home-pin-{id}")),
-                                    name,
-                                    None,
-                                    false,
-                                ),
-                                cx,
-                            )
-                            .on_click(cx.listener(
-                                move |s, _, w, cx| {
-                                    s.navigate(Screen::Library(Tab::Browse, query.clone()), w, cx);
-                                },
-                            ))
-                        })),
-                ),
+                        .on_click(cx.listener(move |s, _, w, cx| {
+                            s.navigate(Screen::Library(Tab::Browse, query.clone()), w, cx);
+                        }))
+                    })),
+            ),
         )
     }
 }

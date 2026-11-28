@@ -63,8 +63,8 @@ pub(in crate::ui) struct SearchState {
     pub restore_after_playback: bool,
     request: u64,
     federated: bool,
-    pending_servers: usize,
-    failures: Vec<String>,
+    pending_categories: usize,
+    failures: std::collections::BTreeMap<String, Vec<&'static str>>,
     jobs: Vec<Task<()>>,
 }
 
@@ -72,43 +72,30 @@ impl SearchState {
     fn receive(
         &mut self,
         server: Server,
-        responses: Vec<(SearchGroup, Result<Page>)>,
+        kind: SearchGroup,
+        result: Result<Page>,
         term: &str,
         w: &Window,
         cx: &App,
     ) -> bool {
-        self.pending_servers = self.pending_servers.saturating_sub(1);
-        let failed: Vec<_> = responses
-            .iter()
-            .filter_map(|(kind, result)| result.is_err().then_some(kind.label()))
-            .collect();
-        if !failed.is_empty() {
+        self.pending_categories = self.pending_categories.saturating_sub(1);
+        let Ok(page) = result else {
             let host = server
                 .identity()
                 .map_or_else(|| server.host(), |a| a.server.as_str());
             self.failures
-                .push(if failed.len() == SearchGroup::ALL.len() {
-                    format!("Couldn’t search {host}.")
-                } else {
-                    format!("Couldn’t search {} on {host}.", failed.join(", "))
-                });
+                .entry(host.to_owned())
+                .or_default()
+                .push(kind.label());
+            return false;
+        };
+        if page.items.is_empty() {
+            return false;
         }
-        let best_from_server = best_title(
-            term,
-            responses
-                .iter()
-                .filter_map(|(_, result)| result.as_ref().ok())
-                .flat_map(|page| page.items.iter()),
-        )
-        .cloned();
-        for (kind, result) in responses {
-            if let Ok(page) = result
-                && !page.items.is_empty()
-            {
-                self.groups
-                    .push(ResultGroup::new(kind, server.clone(), page, 0, cx));
-            }
-        }
+        let candidate = best_title(term, page.items.iter()).cloned();
+        // Append settled categories so existing rows, focus handles and pagination stay put.
+        self.groups
+            .push(ResultGroup::new(kind, server, page, 0, cx));
         if self
             .hero
             .iter()
@@ -116,7 +103,7 @@ impl SearchState {
         {
             return false;
         }
-        let best = best_title(term, self.best.iter().chain(&best_from_server));
+        let best = best_title(term, self.best.iter().chain(&candidate));
         if self.best.as_ref().map(|i| (&i.id, &i.origin)) == best.map(|i| (&i.id, &i.origin)) {
             return false;
         }
@@ -155,7 +142,7 @@ impl SearchState {
 }
 
 pub(in crate::ui) fn search_grid(kind: SearchGroup, w: &Window) -> CatalogGrid {
-    let width = f32::from(w.viewport_size().width) - 2. * PAD;
+    let width = f32::from(w.viewport_size().width) - 2. * CONTENT_GUTTER;
     match kind {
         SearchGroup::Episodes | SearchGroup::Videos => {
             CatalogGrid::fit(width, w.scale_factor(), 235., 12)
@@ -233,59 +220,39 @@ impl Library {
         self.state.search = SearchState {
             request,
             federated: servers.len() > 1,
-            pending_servers: servers.len(),
+            pending_categories: servers.len() * SearchGroup::ALL.len(),
             ..Default::default()
         };
         self.message.clear();
         for server in servers {
-            let query = term.clone();
-            let worker = cx.background_executor().spawn(async move {
-                let responses = std::thread::scope(|scope| {
-                    let requests: Vec<_> = SearchGroup::ALL
-                        .into_iter()
-                        .map(|kind| {
-                            let server = &server;
-                            let term = &query;
-                            (
-                                kind,
-                                scope.spawn(move || kind.on_server(server, term, 0, SEARCH_BATCH)),
-                            )
-                        })
-                        .collect();
-                    requests
-                        .into_iter()
-                        .map(|(kind, job)| {
-                            (
-                                kind,
-                                job.join().unwrap_or_else(|_| {
-                                    Err(anyhow::anyhow!("Search interrupted."))
-                                }),
-                            )
-                        })
-                        .collect::<Vec<_>>()
+            for kind in SearchGroup::ALL {
+                let server = server.clone();
+                let query = term.clone();
+                let worker = cx.background_executor().spawn(async move {
+                    let result = kind.on_server(&server, &query, 0, SEARCH_BATCH);
+                    (server, query, result)
                 });
-                (server, query, responses)
-            });
-            self.state
-                .search
-                .jobs
-                .push(cx.spawn_in(w, async move |view, cx| {
-                    let (server, query, responses) = worker.await;
-                    let _ = view.update_in(cx, |s, w, cx| {
-                        if s.state.search.request == request {
-                            if s.state.search.receive(server, responses, &query, w, cx) {
-                                s.search_target_job = None;
+                self.state
+                    .search
+                    .jobs
+                    .push(cx.spawn_in(w, async move |view, cx| {
+                        let (server, query, result) = worker.await;
+                        let _ = view.update_in(cx, |s, w, cx| {
+                            if s.state.search.request == request {
+                                if s.state.search.receive(server, kind, result, &query, w, cx) {
+                                    s.search_target_job = None;
+                                }
+                                cx.notify();
+                            } else if let Some(state) = s
+                                .history
+                                .iter_mut()
+                                .find(|state| state.search.request == request)
+                            {
+                                state.search.receive(server, kind, result, &query, w, cx);
                             }
-                            cx.notify();
-                        } else if let Some(state) = s
-                            .history
-                            .iter_mut()
-                            .find(|state| state.search.request == request)
-                        {
-                            state.search.receive(server, responses, &query, w, cx);
-                        }
-                    });
-                }));
+                        });
+                    }));
+            }
         }
         cx.notify();
     }
@@ -320,11 +287,7 @@ impl Library {
                 Some(ep) => Some(ep),
                 None => {
                     let seasons = server.seasons(&show.id)?;
-                    match seasons
-                        .iter()
-                        .find(|s| s.index_number != Some(0))
-                        .or(seasons.first())
-                    {
+                    match first_season(&seasons) {
                         Some(season) => server
                             .children(&show, Some(&season.id), 0)?
                             .items
@@ -510,7 +473,7 @@ impl Library {
 
 impl Library {
     fn search_pending(&self) -> bool {
-        self.state.search.pending_servers > 0
+        self.state.search.pending_categories > 0
             || self.search_delay.is_some()
             || self.state.search.request == 0
     }
@@ -519,12 +482,11 @@ impl Library {
         let height = (f32::from(w.viewport_size().height) * 0.22).clamp(122., 178.);
         let width = (height * 16. / 9.).round();
         let state = &self.state.search;
-        let target = item.clone();
         let details = state.hero[0].clone();
+        let artwork_target = item.clone();
+        let artwork_return = details.clone();
         let mut art = div()
             .id("best-art")
-            .track_focus(&details)
-            .tab_stop(true)
             .w(px(width))
             .h(px(height))
             .flex_none()
@@ -542,24 +504,14 @@ impl Library {
         } else {
             art.child(icon(VIDEO, 30.).text_color(rgb(MUTED)))
         };
-        let border = if details.is_focused(w) {
-            rgb(LIME)
-        } else {
-            rgba(0)
-        };
         let art = art
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded_lg()
-                    .border_2()
-                    .border_color(border),
-            )
-            .hover(|s| s.border_1().border_color(rgb(TEXT)))
+            .child(div().absolute().inset_0().rounded_lg().bg(poster_scrim()))
+            .border_1()
+            .border_color(rgba(REST_EDGE))
+            .hover(|s| s.border_color(rgba(HOVER_EDGE)))
             .tooltip(|w, cx| Tooltip::new("Open details").build(w, cx))
             .on_click(cx.listener(move |s, _, w, cx| {
-                s.search_action(target.clone(), false, &details, w, cx)
+                s.search_action(artwork_target.clone(), false, &artwork_return, w, cx)
             }));
         let kind = match item.kind.as_str() {
             "Series" => "TV show",
@@ -582,6 +534,28 @@ impl Library {
             .gap_1()
             .child(label(info.join("  ·  "), 12., MUTED))
             .child(title(item.name.clone(), if height < 140. { 23. } else { 29. }).line_clamp(1));
+        let result = item.clone();
+        let details_button = named_pill(
+            "best-details",
+            "Details",
+            None,
+            false,
+            format!("Open details for {}", item.name),
+        );
+        let mut actions = div()
+            .mt_1()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(
+                accessibility::focus(details_button, &details)
+                    .border_2()
+                    .border_color(rgba(0))
+                    .on_click(cx.listener(move |s, _, w, cx| {
+                        s.search_action(result.clone(), false, &details, w, cx)
+                    })),
+            );
         if let Some(target) = &state.target {
             let mut context = Vec::new();
             if target.kind == "Episode" && item.kind == "Series" {
@@ -600,16 +574,27 @@ impl Library {
             } else {
                 "Play".into()
             };
+            let name = if item.kind == "Series" {
+                format!("{label} of {}", item.name)
+            } else if target.kind == "Episode"
+                && (target.parent_index_number.is_none() || target.index_number.is_none())
+            {
+                label.clone()
+            } else {
+                format!("{label} {}", item.name)
+            };
             let target = target.clone();
             let handle = state.hero[1].clone();
-            copy = copy.child(
-                accessibility::focus(pill("best-play", label, Some(PLAY), true), &handle)
-                    .mt_1()
-                    .bg(rgb(LIME))
-                    .hover(|s| s.bg(rgb(0xe7ff9a)))
-                    .on_click(cx.listener(move |s, _, w, cx| {
-                        s.search_action(target.clone(), true, &handle, w, cx)
-                    })),
+            actions = actions.child(
+                accessibility::focus(
+                    named_pill("best-play", label, Some(PLAY), PillStyle::Primary, name),
+                    &handle,
+                )
+                .border_2()
+                .border_color(rgba(0))
+                .on_click(cx.listener(move |s, _, w, cx| {
+                    s.search_action(target.clone(), true, &handle, w, cx)
+                })),
             );
         }
         div()
@@ -618,7 +603,14 @@ impl Library {
             .gap_2()
             .pb_4()
             .child(section_heading("Best match", 18.))
-            .child(div().flex().items_center().gap_4().child(art).child(copy))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .child(art)
+                    .child(copy.child(actions)),
+            )
     }
 
     fn search_card(
@@ -680,16 +672,8 @@ impl Library {
                 div()
                     .absolute()
                     .inset_0()
-                    .map(|d| {
-                        if person {
-                            d.rounded_full()
-                        } else {
-                            d.rounded_lg()
-                        }
-                    })
-                    .border_2()
-                    .border_color(if selected { rgb(LIME) } else { rgba(0) })
-                    .group_hover("media-card", |s| s.border_color(rgb(TEXT))),
+                    .when(!person, |d| d.bg(poster_scrim()))
+                    .map(|d| poster_edge(d, selected, px(if person { width / 2. } else { 8. }))),
             );
             if !person {
                 pic = pic.children(self.card_format_strip(item, &id, width, cx));
@@ -733,7 +717,7 @@ impl Library {
         )
         .max_w(px(520.));
         let header = div()
-            .px(px(PAD))
+            .px(px(CONTENT_GUTTER))
             .py_3()
             .flex()
             .items_center()
@@ -757,7 +741,7 @@ impl Library {
             .overflow_y_scroll()
             .min_h_0()
             .flex_1()
-            .px(px(PAD))
+            .px(px(CONTENT_GUTTER))
             .pb_4();
         if term.is_empty() {
             if !self.recent_searches.is_empty() {
@@ -800,7 +784,7 @@ impl Library {
                 let status = if state.groups.is_empty() {
                     "Searching Jellyfin…"
                 } else {
-                    "Searching more servers…"
+                    "Looking for more results…"
                 };
                 body = body.child(
                     label(status, 14., MUTED)
@@ -812,13 +796,19 @@ impl Library {
                 body = body.child(self.empty("No matching titles or people."));
             }
             if !state.failures.is_empty() {
+                let message = state
+                    .failures
+                    .iter()
+                    .map(|(host, kinds)| format!("Couldn’t search {} on {host}.", kinds.join(", ")))
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 body = body.child(
                     div()
                         .flex()
                         .items_center()
                         .gap_3()
                         .py_2()
-                        .child(label(state.failures.join(" "), 14., MUTED).flex_1())
+                        .child(label(message, 14., MUTED).flex_1())
                         .child(
                             pill("retry-search", "Retry search", Some(REFRESH), false)
                                 .on_click(cx.listener(|s, _, w, cx| s.refresh(w, cx))),

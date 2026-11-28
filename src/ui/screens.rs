@@ -1,6 +1,8 @@
 mod anime;
 mod browse;
 mod catalog;
+mod catalog_preview;
+pub(super) use catalog_preview::{CatalogCover, preview_art};
 mod catalog_poster;
 mod credits;
 pub(super) use credits::{ExtraFeed, credit_ranges};
@@ -20,6 +22,7 @@ mod navigation;
 mod options;
 mod search;
 pub(super) use controller_search::SearchKeyboard;
+mod series;
 mod settings;
 mod settings_navigation;
 pub(super) use search::{SearchState, search_grid};
@@ -30,21 +33,16 @@ mod player_chrome;
 pub(super) use player_chrome::PREVIEW_WIDTH;
 mod player_menu;
 use super::artwork::background;
+use super::theme::*;
 use super::*;
 use crate::{jellyfin::ArtKind, preferences::PosterSize};
 use gpui_component::tooltip::Tooltip;
 
-const BG: u32 = 0x0e0f12;
-const SURFACE: u32 = 0x15171c;
-const ACTIVE: u32 = 0x2d2f35;
-const TEXT: u32 = 0xededed;
-const MUTED: u32 = 0xa0a1a6;
 const NAV_HEIGHT: f32 = 48.;
+const NAV_TOP_INSET: f32 = 9.;
 // Space for the floating bar and its top and bottom gutters.
-const NAV_CLEARANCE: f32 = NAV_HEIGHT + 18.;
+const NAV_CLEARANCE: f32 = NAV_HEIGHT + 2. * NAV_TOP_INSET;
 const POSTER_LIFT: f32 = 3.;
-const PAD: f32 = 16.;
-const LIME: u32 = 0xdafe67;
 
 const SEARCH: &str = "\u{e721}";
 const PLAY: &str = "\u{e768}";
@@ -60,6 +58,21 @@ const VIDEO: &str = "\u{e714}";
 
 impl ViewState {
     pub(super) fn reveal_row(&self, index: usize) {
+        if matches!(&self.screen, Screen::Detail(item, _) if item.kind == "Series") {
+            // These bounds already include the outer page's scroll offset.
+            if let Some(row) = self.series_rows.bounds_for_item(index) {
+                let viewport = self.scroll.bounds();
+                let top = viewport.top() + px(NAV_CLEARANCE);
+                let delta = if row.top() < top {
+                    top - row.top()
+                } else {
+                    (viewport.bottom() - row.bottom()).min(px(0.))
+                };
+                self.scroll
+                    .set_offset(self.scroll.offset() + point(px(0.), delta));
+            }
+            return;
+        }
         if matches!(self.screen, Screen::Detail(..) | Screen::Discover)
             && let Some(row) = self.scroll.bounds_for_item(index)
         {
@@ -128,14 +141,12 @@ fn tip(button: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
 fn glyph_button(id: &'static str, code: &'static str) -> Stateful<Div> {
     icon_button(id, icon(code, 17.))
 }
-const ART_CONTROL_BG: u32 = 0x111418df;
-
 fn artwork_control(button: Stateful<Div>) -> Stateful<Div> {
     button
         .bg(rgba(ART_CONTROL_BG))
-        .text_color(rgb(0xffffff))
+        .text_color(rgb(TEXT))
         .border_1()
-        .border_color(rgba(0xffffff40))
+        .border_color(rgba(HOVER_EDGE))
 }
 
 fn icon_button(id: &'static str, glyph: Div) -> Stateful<Div> {
@@ -154,18 +165,46 @@ fn icon_button(id: &'static str, glyph: Div) -> Stateful<Div> {
         id,
     )
 }
+enum PillStyle {
+    Neutral,
+    Glass,
+    Season(bool),
+    Selected,
+    Primary,
+}
+
+impl From<bool> for PillStyle {
+    fn from(selected: bool) -> Self {
+        if selected {
+            Self::Selected
+        } else {
+            Self::Neutral
+        }
+    }
+}
+
 fn pill(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
     code: Option<&'static str>,
-    active: bool,
+    style: impl Into<PillStyle>,
 ) -> Stateful<Div> {
     let text = text.into();
+    named_pill(id, text.clone(), code, style, text)
+}
+
+fn named_pill(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    code: Option<&'static str>,
+    style: impl Into<PillStyle>,
+    accessible_name: impl Into<SharedString>,
+) -> Stateful<Div> {
     let control = div()
         .id(id)
         .focusable()
         .tab_stop(true)
-        .focus(|d| d.border_2().border_color(rgb(MUTED)))
+        .focus(|d| d.border_2().border_color(rgb(FOCUS)))
         .flex_none()
         .flex()
         .items_center()
@@ -175,14 +214,41 @@ fn pill(
         .px_4()
         .rounded_full()
         .cursor_pointer()
-        .bg(rgb(if active { TEXT } else { SURFACE }))
-        .text_color(rgb(if active { BG } else { TEXT }))
+        .border_1()
         .text_size(px(13.))
         .font_weight(FontWeight::SEMIBOLD)
-        .hover(move |d| d.bg(rgb(if active { 0xffffff } else { ACTIVE })))
         .when_some(code, |d, code| d.child(icon(code, 13.)))
-        .child(text.clone());
-    accessibility::button(control, text, None, false)
+        .child(text.into());
+    let control = match style.into() {
+        PillStyle::Primary => primary_action(control),
+        PillStyle::Glass => control
+            .bg(rgba(GLASS_FILL))
+            .text_color(rgb(TEXT))
+            .border_color(rgba(GLASS_EDGE))
+            .hover(|s| s.bg(rgba(0xffffff32))),
+        PillStyle::Season(true) => control
+            .bg(rgb(TEXT))
+            .text_color(rgb(BG))
+            .font_weight(FontWeight::BOLD)
+            .border_color(rgb(TEXT))
+            .hover(|s| s.bg(rgb(0xe9ecf1))),
+        PillStyle::Season(false) => control
+            .bg(rgba(0xffffff0f))
+            .text_color(rgb(BODY))
+            .border_color(rgba(REST_EDGE))
+            .hover(|s| s.bg(rgba(GLASS_FILL))),
+        PillStyle::Selected => control
+            .bg(rgb(SELECTED))
+            .text_color(rgb(TEXT))
+            .border_color(rgba(HOVER_EDGE))
+            .hover(|d| d.border_color(rgb(META))),
+        PillStyle::Neutral => control
+            .bg(rgb(SURFACE))
+            .text_color(rgb(BODY))
+            .border_color(rgba(REST_EDGE))
+            .hover(|d| d.bg(rgba(HOVER_FILL)).border_color(rgba(REST_EDGE))),
+    };
+    accessibility::button(control, accessible_name, None, false)
 }
 fn episode_play_label(item: &Item) -> String {
     let action = if item.position() > 0 {
@@ -236,7 +302,7 @@ pub(super) struct CatalogGrid {
 
 impl CatalogGrid {
     fn new(viewport_width: f32, scale: f32) -> Self {
-        Self::fit(viewport_width - 2. * PAD, scale, 192., 15)
+        Self::fit(viewport_width - 2. * CONTENT_GUTTER, scale, 192., 15)
     }
 
     fn fit(available: f32, scale: f32, target_width: f32, max_columns: usize) -> Self {
@@ -265,7 +331,7 @@ impl CatalogGrid {
 #[derive(Clone, Copy)]
 enum CardLayout {
     Shelf(ShelfKind),
-    Catalog { poster: ArtKind },
+    Recommendation { poster: ArtKind },
 }
 
 fn poster_years(item: &Item) -> String {
@@ -390,17 +456,12 @@ impl Library {
         id: ElementId,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let face = match layout {
-            CardLayout::Shelf(kind) => self.shelf_face(item, width, kind, selected, &id, cx),
-            CardLayout::Catalog { poster } => {
-                self.catalog_face(item, width, poster, selected, &id, cx)
-            }
-        };
+        let face = self.shelf_face(item, width, layout, selected, &id, cx);
         let target = item.clone();
         card_frame(face, width, selected, id).on_click(cx.listener(
             move |s, _, w, cx| match layout {
                 CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
-                CardLayout::Catalog { .. } => s.open_item(target.clone(), w, cx),
+                CardLayout::Recommendation { .. } => s.open_item(target.clone(), w, cx),
             },
         ))
     }
@@ -409,14 +470,16 @@ impl Library {
         &self,
         item: &Item,
         width: f32,
-        kind: ShelfKind,
+        layout: CardLayout,
         selected: bool,
         id: &ElementId,
         cx: &mut Context<Self>,
     ) -> Div {
-        let continued = kind == ShelfKind::Continue;
-        let recent = !continued;
-        let key = kind.art(item);
+        let continued = matches!(layout, CardLayout::Shelf(ShelfKind::Continue));
+        let key = match layout {
+            CardLayout::Shelf(kind) => kind.art(item),
+            CardLayout::Recommendation { poster } => item.art(poster),
+        };
         let height = (width
             * if continued {
                 9. / 16.
@@ -435,7 +498,7 @@ impl Library {
             .justify_center()
             .overflow_hidden()
             .rounded(px(8.))
-            .bg(rgb(0x25272c));
+            .bg(rgb(SURFACE));
         if let Some(art) = self.artwork.get(key) {
             picture = picture.child(
                 img(art)
@@ -446,37 +509,7 @@ impl Library {
                     .object_fit(ObjectFit::Cover),
             );
         } else {
-            picture = picture.child(icon(VIDEO, 23.).text_color(rgb(0x55575f)));
-        }
-        if continued {
-            let status = if item.position() > 0 {
-                item.run_time_ticks
-                    .filter(|t| *t > item.position())
-                    .map(|t| format!("{} min left", (t - item.position()).div_ceil(600_000_000)))
-                    .unwrap_or_else(|| "Resume".into())
-            } else {
-                "Next episode".into()
-            };
-            picture = picture
-                .child(coat(180., 0x00000000, 0x050907ad, 0.54, 1.))
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(9.))
-                        .bottom(px(10.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .rounded_full()
-                        .bg(rgba(0x101513df))
-                        .px(px(9.))
-                        .py(px(3.))
-                        .child(
-                            icon(if item.position() > 0 { PLAY } else { NEXT }, 10.)
-                                .text_color(rgb(LIME)),
-                        )
-                        .child(title(status, 12.)),
-                );
+            picture = picture.child(icon(VIDEO, 23.).text_color(rgb(MUTED)));
         }
         if continued
             && let Some(progress) = item
@@ -494,65 +527,22 @@ impl Library {
                     .h(px(3.))
                     .rounded_full()
                     .overflow_hidden()
-                    .bg(rgba(0xdde4d45c))
+                    .bg(rgba(0xffffff5c))
                     .child(
                         div()
                             .h_full()
                             .w(relative(progress.clamp(0., 1.)))
-                            .bg(rgb(LIME)),
+                            .bg(rgb(TEXT)),
                     ),
             );
         }
-        let unplayed = item
-            .user_data
-            .as_ref()
-            .and_then(|data| data.unplayed_item_count)
-            .filter(|&count| count > 0 && recent && item.kind == "Series");
-        if recent && let Some(scores) = poster_scores(item, 5.) {
-            picture = picture.child(scores);
-        }
-        if let Some(count) = unplayed {
-            let value = if count > 99 {
-                "99+".into()
-            } else {
-                count.to_string()
-            };
-            picture = picture.child(
-                label(value, 11., 0xffffff)
-                    .id("unplayed-episodes")
-                    .absolute()
-                    .top(px(5.))
-                    .right(px(5.))
-                    .min_w(px(21.))
-                    .h(px(21.))
-                    .px(px(3.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .rounded_full()
-                    .bg(rgb(0x23529e))
-                    .tooltip(move |w, cx| {
-                        let noun = if count == 1 { "episode" } else { "episodes" };
-                        Tooltip::new(format!("{count} unwatched {noun}")).build(w, cx)
-                    }),
-            );
-        }
-        picture = picture.child(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded(px(8.))
-                .border_2()
-                .border_color(if selected { rgb(LIME) } else { rgba(0) })
-                .group_hover("media-card", |s| s.border_color(rgb(LIME))),
-        );
+        picture = picture.child(poster_edge(div().absolute().inset_0(), selected, px(8.)));
         if continued {
             let button = div()
                 .id("continue-actions")
                 .size(px(28.))
                 .rounded_full()
-                .bg(rgba(0x101513ed))
+                .bg(rgba((SURFACE << 8) | 0xed))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -567,7 +557,7 @@ impl Library {
                     !selected && !self.popup_menu.as_ref().is_some_and(|(key, _)| key == id),
                     |d| d.opacity(0.).group_hover("media-card", |d| d.opacity(1.)),
                 )
-                .focus(|d| d.opacity(1.).border_1().border_color(rgb(LIME)));
+                .focus(|d| d.opacity(1.).border_1().border_color(rgb(FOCUS)));
             picture = picture.child(
                 self.popup_trigger(
                     id.clone(),
@@ -585,49 +575,54 @@ impl Library {
                 .top(px(8.)),
             );
         }
-        let format_width = if continued || unplayed.is_some() {
-            width - 28.
-        } else {
-            width
-        };
-        if let Some(strip) = self.card_format_strip(item, id, format_width, cx) {
-            picture = picture.child(strip);
-        }
         let primary = if continued {
             item.series_name.as_ref().unwrap_or(&item.name)
         } else {
             &item.name
         };
-        let secondary = if continued && item.series_name.is_some() {
-            match (item.parent_index_number, item.index_number) {
-                (Some(s), Some(e)) => format!("S{s:02} E{e:02}  ·  {}", item.name),
-                _ => item.name.clone(),
+        let secondary = if continued {
+            let mut parts = Vec::new();
+            if let (Some(season), Some(episode)) = (item.parent_index_number, item.index_number) {
+                parts.push(format!("S{season} • E{episode}"));
+            } else if let Some(year) = item.production_year {
+                parts.push(year.to_string());
             }
-        } else if item.kind == "Episode" {
-            item.caption()
-        } else if recent {
-            poster_years(item)
+            if item.position() > 0 {
+                if let Some(total) = item.run_time_ticks.filter(|t| *t > item.position()) {
+                    parts.push(format!(
+                        "{}m left",
+                        (total - item.position()).div_ceil(600_000_000)
+                    ));
+                } else {
+                    parts.push("In progress".into());
+                }
+            } else if item.kind == "Episode" {
+                parts.push("Next episode".into());
+            }
+            parts.join(" · ")
         } else {
-            item.production_year
-                .map(|y| y.to_string())
-                .unwrap_or_default()
+            let years = poster_years(item);
+            if matches!(layout, CardLayout::Recommendation { .. })
+                && let Some(score) = item
+                    .community_rating
+                    .filter(|r| r.is_finite() && (0.0..=10.0).contains(r) && *r > 0.)
+            {
+                [years, format!("{score:.1} ★")]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            } else {
+                years
+            }
         };
-        let name = title(primary.clone(), 16.);
-        let name = if recent {
-            name.w(px(width))
-                .text_center()
-                .line_clamp(1)
-                .text_ellipsis()
-        } else {
-            name.truncate()
-        };
-        let detail =
-            label(secondary, 13., if continued { 0xd9ddda } else { 0xa7afa9 }).line_height(px(18.));
+        let name = title(primary.clone(), CARD_TITLE_SIZE).truncate();
+        let detail = label(secondary, 13., META).line_height(px(18.));
         div()
             .relative()
             .child(picture)
             .child(name.line_height(px(20.)).mt(px(7.)))
-            .child(detail.truncate().when(recent, |d| d.text_center()))
+            .child(detail.truncate())
     }
 
     fn backdrop(&self, item: &Item) -> Div {
@@ -647,7 +642,7 @@ impl Library {
         }
         layer
             .child(coat(90., 0x08090c80, 0x08090c00, 0., 0.9))
-            .child(coat(180., 0x0e0f1200, 0x0e0f12ff, 0.43, 1.))
+            .child(coat(180., BG << 8, (BG << 8) | 255, 0.43, 1.))
     }
 
     fn title_logo(&self, item: &Item, width: f32, height: f32) -> Option<Div> {
@@ -686,7 +681,7 @@ impl Library {
             "Play".into()
         };
         let target = item.clone();
-        pill("play-title", text, Some(PLAY), true)
+        pill("play-title", text, Some(PLAY), PillStyle::Primary)
             .h(px(42.))
             .px_5()
             .on_click(cx.listener(move |s, _, w, cx| s.play_item(target.clone(), w, cx)))
@@ -757,7 +752,15 @@ impl Library {
     }
 
     fn basic_detail_header(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
-        let height = NAV_CLEARANCE + (f32::from(w.viewport_size().height) * 0.62).clamp(265., 560.);
+        let has_cover_only = self.state.catalog_cover.is_some()
+            && item.art(ArtKind::Backdrop).is_none()
+            && item.kind != "Episode";
+        let height = NAV_CLEARANCE
+            + if has_cover_only {
+                (f32::from(w.viewport_size().height) * 0.32).clamp(230., 355.)
+            } else {
+                (f32::from(w.viewport_size().height) * 0.62).clamp(265., 560.)
+            };
         let mut details = div()
             .absolute()
             .left(px(20.))
@@ -815,13 +818,27 @@ impl Library {
             );
         }
         details = details.child(self.secondary_actions(item, actions, cx));
+        let poster = self.detail_catalog_poster(item, (height * 0.29).clamp(80., 160.));
+        if let Some(poster) = poster {
+            details = div()
+                .absolute()
+                .left(px(20.))
+                .right(px(20.))
+                .bottom(px(16.))
+                .flex()
+                .items_end()
+                .gap_4()
+                .child(poster)
+                .child(details.relative().left_0().right_0().bottom_0().min_w_0());
+        }
         div().child(
             div()
                 .relative()
                 .w_full()
                 .h(px(height))
                 .overflow_hidden()
-                .child(self.backdrop(item))
+                .bg(rgb(BG))
+                .when(!has_cover_only, |d| d.child(self.backdrop(item)))
                 .child(details)
                 .child(
                     div().absolute().left(px(16.)).top(px(NAV_CLEARANCE)).child(
@@ -860,7 +877,11 @@ impl Library {
                     },
                     "\u{e73e}",
                 )
-                .bg(if watched { rgb(TEXT) } else { rgba(0x15171ccb) })
+                .bg(if watched {
+                    rgb(TEXT)
+                } else {
+                    rgba((SURFACE << 8) | 0xcb)
+                })
                 .text_color(rgb(if watched { BG } else { TEXT }))
                 .on_click(cx.listener(|s, _, w, cx| s.toggle_flag(false, w, cx))),
             );
@@ -879,7 +900,7 @@ impl Library {
             .bg(if favorite {
                 rgb(TEXT)
             } else {
-                rgba(0x15171ccb)
+                rgba((SURFACE << 8) | 0xcb)
             })
             .text_color(rgb(if favorite { BG } else { TEXT }))
             .when(self.state.detail_panel == Some(DetailPanel::More), |b| {
@@ -1069,51 +1090,14 @@ impl Library {
             }
         }
         if item.kind == "Series" {
-            supplements = supplements.child(self.credits_extras(item, w, cx));
-        } else {
-            head = head.child(self.credits_extras(item, w, cx));
+            return self.series_detail(item, season, head, supplements, w, cx);
         }
+        head = head.child(self.credits_extras(item, w, cx));
         if !item.playable() {
-            let mut section = div()
-                .px_5()
-                .when(cinematic, |d| d.px(px(detail::detail_inset(w))))
+            let section = div()
+                .px(px(CONTENT_GUTTER))
                 .py_2()
-                .child(section_heading(
-                    if item.kind == "Series" {
-                        "Episodes"
-                    } else {
-                        "Titles"
-                    },
-                    21.,
-                ));
-            if !self.state.seasons.is_empty() {
-                let mut seasons = div()
-                    .id("seasons")
-                    .track_scroll(&self.state.season_scroll)
-                    .w_full()
-                    .overflow_x_scroll()
-                    .flex()
-                    .gap_2()
-                    .py_2();
-                for (i, part) in self.state.seasons.iter().enumerate() {
-                    let id = part.id.clone();
-                    seasons = seasons.child(
-                        pill(("season", i), part.name.clone(), None, season == Some(&id))
-                            .when(
-                                self.keyboard
-                                    && self.state.series_focus == SeriesFocus::Seasons
-                                    && season == Some(&id),
-                                |d| d.border_2().border_color(rgb(LIME)),
-                            )
-                            .on_click(cx.listener(move |s, _, w, cx| {
-                                s.state.series_focus = SeriesFocus::Hero;
-                                s.focus.focus(w);
-                                s.select_season(&id, w, cx);
-                            })),
-                    );
-                }
-                section = section.child(seasons);
-            }
+                .child(section_heading("Titles", 21.));
             head = head.child(section);
         }
         let mut body = div()
@@ -1143,11 +1127,20 @@ impl Library {
                 {
                     thumbnail = thumbnail.child(strip);
                 }
-                body = body.child(
+                let row = accessibility::title_button(
                     div()
                         .id(("episode", i))
-                        .mx_4()
-                        .when(cinematic, |d| d.mx(px(detail::detail_inset(w) - 8.)))
+                        .relative()
+                        .focusable()
+                        .tab_stop(true),
+                    child,
+                    None,
+                    false,
+                );
+                body = body.child(
+                    accessibility::keyboard_focus(row, cx)
+                        .focus(|d| d.bg(rgb(ACTIVE)))
+                        .mx(px(CONTENT_GUTTER - 8.))
                         .px_2()
                         .py_2()
                         .rounded_md()
@@ -1155,13 +1148,9 @@ impl Library {
                         .flex()
                         .items_center()
                         .gap_4()
-                        .when(
-                            self.keyboard
-                                && i == self.state.selection
-                                && (item.kind != "Series"
-                                    || self.state.series_focus == SeriesFocus::Episodes),
-                            |d| d.bg(rgb(ACTIVE)),
-                        )
+                        .when(self.keyboard && i == self.state.selection, |d| {
+                            d.bg(rgb(ACTIVE))
+                        })
                         .hover(|d| d.bg(rgb(SURFACE)))
                         .child(thumbnail)
                         .child(
@@ -1175,26 +1164,28 @@ impl Library {
                                 }),
                         )
                         .when(child.kind == "Episode", |row| {
-                            let active = self
+                            let resume_target = self
                                 .state
                                 .series_target
                                 .as_ref()
-                                .is_some_and(|ep| ep.id == child.id);
+                                .filter(|ep| ep.id == child.id);
+                            let episode = resume_target.unwrap_or(child);
                             let played =
-                                child.user_data.as_ref().and_then(|u| u.played) == Some(true);
-                            let play = child.clone();
-                            row.when(active && !played && child.position() == 0, |r| {
-                                r.child(label("Up next", 13., LIME))
-                            })
-                            .when(played && child.position() == 0, |r| {
+                                episode.user_data.as_ref().and_then(|u| u.played) == Some(true);
+                            let play = episode.clone();
+                            row.when(
+                                resume_target.is_some() && !played && episode.position() == 0,
+                                |r| r.child(label("Up next", 13., BODY)),
+                            )
+                            .when(played && episode.position() == 0, |r| {
                                 r.child(label("Watched", 13., MUTED))
                             })
                             .child(
                                 pill(
                                     ("play-episode", i),
-                                    episode_action(child),
+                                    episode_action(episode),
                                     Some(PLAY),
-                                    active,
+                                    false,
                                 )
                                 .on_click(cx.listener(
                                     move |s, _, w, cx| {
@@ -1218,33 +1209,41 @@ impl Library {
                     .child(self.empty("No titles in this selection.")),
             );
         }
-        if item.kind == "Series" {
-            body = body.child(supplements);
-        }
         body = body.when_some(self.similar_section(w, cx), |d, row| d.child(row));
         div().size_full().min_h_0().child(body)
     }
 
     fn connection(&self, cx: &mut Context<Self>) -> Div {
-        let mut panel = div()
+        let mut panel = glass_panel(div())
             .w(px(440.))
             .max_w_full()
             .flex()
             .flex_col()
             .gap_4()
             .p_8()
-            .rounded_xl()
-            .bg(rgb(SURFACE))
             .child(crate::navigation_icons::waterline(164., 40.));
         if let Some(code) = &self.code {
+            let instructions =
+                "Open Quick Connect in a signed-in Jellyfin client and enter this code.";
+            let digits = code
+                .chars()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
             panel = panel
                 .child(page_heading("Pair this device", 28.))
-                .child(label(
-                    "Open Quick Connect in a signed-in Jellyfin client and enter this code.",
-                    15.,
-                    MUTED,
+                .child(accessibility::readable_text(
+                    label(instructions, 15., MUTED),
+                    "pair-instructions",
+                    instructions,
+                    false,
                 ))
-                .child(title(code.clone(), 46.))
+                .child(accessibility::readable_text(
+                    title(code.clone(), 46.),
+                    "pair-code",
+                    &format!("Pairing code {digits}"),
+                    true,
+                ))
                 .child(
                     pill("pair-password", "Use username and password", None, false)
                         .on_click(cx.listener(|s, _, w, cx| s.show_password_sign_in(w, cx))),
@@ -1292,7 +1291,7 @@ impl Library {
                                 "Sign in"
                             },
                             None,
-                            true,
+                            PillStyle::Primary,
                         )
                         .on_click(cx.listener(|s, _, w, cx| s.sign_in_with_password(w, cx))),
                     )
@@ -1315,7 +1314,7 @@ impl Library {
                                 "Get pairing code"
                             },
                             None,
-                            true,
+                            PillStyle::Primary,
                         )
                         .on_click(cx.listener(|s, _, w, cx| s.connect(w, cx))),
                     )
@@ -1465,13 +1464,12 @@ impl Render for Library {
                 }));
             return self.playback_screen(root, p, w, opacity, cx);
         }
-        let root = root.bg(rgb(BG));
+        let root = root.bg(rgb(AMBIENT_BASE));
         if std::mem::take(&mut self.state.search.restore_after_playback) {
             self.state.search.restore_focus(w);
         }
         if self.state.reload_series_target && !self.busy && self.message.is_empty() {
-            self.state.reload_series_target = false;
-            self.load(w, cx);
+            self.load_series_target(false, w, cx);
         }
         if self.home_dirty
             && !self.busy
@@ -1506,9 +1504,18 @@ impl Render for Library {
                 self.artwork.reset_marquee();
                 self.marquee_image(item, w)
             }
+            screen if screen.catalog_preview() => {
+                self.artwork.reset_marquee();
+                self.state
+                    .wall
+                    .item(self.state.selection)
+                    .and_then(|item| self.artwork.get(preview_art(item, screen, w)))
+            }
             _ => {
                 self.artwork.reset_marquee();
-                None
+                self.featured
+                    .get(self.hero)
+                    .and_then(|item| self.marquee_image(item, w))
             }
         };
         let tint = self
@@ -1524,7 +1531,7 @@ impl Render for Library {
                 Screen::Library(tab, q) => self.browse(*tab, q, w, cx),
                 Screen::Search(term) => self.search_view(term, w, cx),
                 Screen::Live(_) | Screen::Guide(_) | Screen::Timers(_) => self.live_view(cx),
-                Screen::Settings(page) => self.settings(*page, cx),
+                Screen::Settings(page) => self.settings(*page, w, cx),
                 Screen::Explore | Screen::ExploreTitle(_) => self.explore_view(cx),
                 Screen::Anime | Screen::AnimeTitle(_) => self.anime_view(cx),
                 Screen::Copies { item, action } => self.copy_picker(item, *action, cx),
@@ -1532,9 +1539,13 @@ impl Render for Library {
             }
         };
         let hero = matches!(self.state.screen, Screen::Detail(..))
+            || (self.state.screen.spotlight() && self.catalog_preview_visible())
             || matches!(self.state.screen, Screen::Discover)
                 && self.featured.get(self.hero).is_some();
-        root.child(
+        root.when(!discover || self.featured.get(self.hero).is_none(), |d| {
+            d.child(self.artwork.glass.ambient())
+        })
+        .child(
             div()
                 .flex_1()
                 .min_h_0()
@@ -1546,8 +1557,9 @@ impl Render for Library {
                 .opacity(return_opacity)
                 .child(content),
         )
+        .children(self.catalog_cover_overlay(w))
         .when(self.server.is_some(), |d| {
-            d.child(self.top_navigation(tint, w, cx))
+            d.child(self.top_navigation(w, cx))
         })
         .when_some(self.player.as_ref().filter(|p| p.audio_only), |r, p| {
             r.child(self.mini_player(p, cx))
@@ -1574,15 +1586,25 @@ impl Render for Library {
                         )
                     })
                     .when(self.server.is_some(), |d| {
-                        d.child(
-                            glyph_button("Retry", REFRESH)
-                                .on_click(cx.listener(|s, _, w, cx| s.retry_playback(w, cx))),
-                        )
+                        d.child(glyph_button("Retry", REFRESH).on_click(cx.listener(
+                            |s, _, w, cx| {
+                                if let Some(retry) =
+                                    s.flag_retry.take().filter(|r| r.message == s.message)
+                                {
+                                    s.message.clear();
+                                    s.set_item_flag(retry.item, retry.favorite, retry.value, w, cx);
+                                    cx.notify();
+                                } else {
+                                    s.retry_playback(w, cx);
+                                }
+                            },
+                        )))
                     })
                     .child(glyph_button("Dismiss", "\u{e711}").on_click(cx.listener(
                         |s, _, _, cx| {
                             s.message.clear();
                             s.failure = None;
+                            s.flag_retry = None;
                             cx.notify();
                         },
                     ))),
@@ -1593,7 +1615,7 @@ impl Render for Library {
 
 #[cfg(test)]
 mod poster_tests {
-    use super::{ArtKind, CATALOG_GAP, CatalogGrid, Item, PAD, ShelfKind, poster_years};
+    use super::{ArtKind, CATALOG_GAP, CONTENT_GUTTER, CatalogGrid, Item, ShelfKind, poster_years};
     use crate::preferences::PosterSize;
 
     #[test]
@@ -1608,10 +1630,9 @@ mod poster_tests {
             ShelfKind::RecentTv.art(&series),
             series.art(ArtKind::Poster)
         );
-        assert_eq!(
-            ShelfKind::Continue.art(&series),
-            series.art(ArtKind::SmallBackdrop)
-        );
+        let mut still = series.art(ArtKind::SmallBackdrop).unwrap();
+        still.max_width = 720;
+        assert_eq!(ShelfKind::Continue.art(&series), Some(still));
         assert_eq!(poster_years(&series), "2021 – Present");
         series.status = Some("Ended".into());
         assert_eq!(poster_years(&series), "2021 – 2025");
@@ -1626,13 +1647,13 @@ mod poster_tests {
             (1080., 1., 5, ArtKind::Poster),
             (3840. / 1.25, 1.25, 15, ArtKind::Poster),
             (3840., 1., 15, ArtKind::Poster),
-            (1920., 2., 10, ArtKind::LargePoster),
+            (1920., 2., 9, ArtKind::LargePoster),
         ] {
             let grid = CatalogGrid::new(width, scale);
             assert_eq!(grid.columns, columns);
             assert_eq!(grid.poster, art);
             let used = grid.card_width * columns as f32 + CATALOG_GAP * (columns - 1) as f32;
-            let remaining = width - 2. * PAD - used;
+            let remaining = width - 2. * CONTENT_GUTTER - used;
             assert!((0. ..columns as f32).contains(&remaining));
         }
     }
@@ -1641,7 +1662,7 @@ mod poster_tests {
     fn library_poster_sizes_reflow_at_windowed_and_maximized_4k_widths() {
         for (client, counts) in [(1348., [7, 5, 4]), (3840., [20, 15, 11])] {
             let scale = 1.25;
-            let available = client / scale - 2. * PAD - 24.;
+            let available = client / scale - 2. * CONTENT_GUTTER - 24.;
             for (size, count) in [PosterSize::Small, PosterSize::Medium, PosterSize::Large]
                 .into_iter()
                 .zip(counts)

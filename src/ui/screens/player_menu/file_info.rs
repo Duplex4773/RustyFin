@@ -74,24 +74,6 @@ fn dynamic_range(stream: &Stream) -> Option<String> {
     })
 }
 
-fn spatial_audio(stream: &Stream) -> Option<String> {
-    let spatial = match stream.audio_spatial_format.as_deref() {
-        Some("DolbyAtmos") => "Dolby Atmos",
-        Some("DTSX") => "DTS:X",
-        _ => {
-            let profile = stream.profile.as_ref()?.to_ascii_lowercase();
-            if profile.contains("atmos") {
-                "Dolby Atmos"
-            } else if profile.contains("dts:x") {
-                "DTS:X"
-            } else {
-                return None;
-            }
-        }
-    };
-    Some(spatial.into())
-}
-
 fn channels(stream: &Stream) -> Option<String> {
     match (detail(&stream.channel_layout), stream.channels) {
         (Some(layout), Some(n)) => Some(format!("{layout} ({n} ch)")),
@@ -202,7 +184,7 @@ fn track(name: String, glyph: &'static str, stream: &Stream) -> Div {
                     .filter(|n| *n > 0)
                     .map(|n| format!("{} kHz", number(f64::from(n) / 1000., 3))),
             ),
-            ("Spatial audio", spatial_audio(stream)),
+            ("Spatial audio", stream.spatial_audio()),
         ]),
         "Subtitle" => values.extend([
             ("Text based", stream.is_text_subtitle_stream.map(yes_no)),
@@ -291,7 +273,7 @@ impl Library {
             video.and_then(dynamic_range),
             video.and_then(Stream::codec_name),
             audio.and_then(Stream::codec_name),
-            audio.and_then(spatial_audio),
+            audio.and_then(Stream::spatial_audio),
             file_size.clone(),
             runtime.clone(),
         ];
@@ -318,7 +300,7 @@ impl Library {
             ("Current audio output", p.audio_output()),
         ]));
         if let Some(notice) = p.route_notice {
-            overview = overview.child(label(notice, 13., LIME));
+            overview = overview.child(label(notice, 13., BODY));
         }
         // A remote media URL can contain an access token. Only offer a filesystem path.
         let path = source.path.as_deref().filter(|path| {

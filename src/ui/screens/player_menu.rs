@@ -8,7 +8,7 @@ mod file_info;
 
 const ROW: f32 = 38.;
 const HEADER: f32 = 48.;
-const SECONDARY: u32 = 0xc8cdce;
+const SECONDARY: u32 = BODY;
 const SHADER_READOUT: f32 = 62.;
 
 pub(super) fn shader_status_details(status: ShaderStatus) -> (&'static str, String, u32) {
@@ -33,7 +33,7 @@ pub(super) fn shader_status_details(status: ShaderStatus) -> (&'static str, Stri
                 };
                 detail.push_str(&format!(" · {time} ms GPU time"));
             }
-            ("Running", detail, LIME)
+            ("Running", detail, TEXT)
         }
         ShaderStatus::BelowScale { scale, required } => (
             "Skipped",
@@ -50,7 +50,7 @@ pub(super) fn shader_status_details(status: ShaderStatus) -> (&'static str, Stri
             } else {
                 format!("{scale:.2}× output. See the NVIDIA App for AI enhancement status.")
             },
-            LIME,
+            TEXT,
         ),
         ShaderStatus::RtxUnavailable(reason) => ("RTX unavailable", reason.into(), 0xffd9b3),
         ShaderStatus::RtxAtUhd => (
@@ -166,7 +166,7 @@ fn action_row(
         .border_1()
         .border_color(rgba(0x00000000))
         .hover(|d| d.bg(rgba(0xffffff16)))
-        .focus(|d| d.bg(rgba(0x101713b0)).border_color(rgb(LIME)))
+        .focus(|d| d.bg(rgba((ACTIVE << 8) | 0xb0)).border_color(rgb(FOCUS)))
         .when_some(glyph, |d, g| {
             d.child(icon(g, 17.).text_color(rgb(SECONDARY)))
         })
@@ -191,7 +191,9 @@ fn unavailable_shader_row(
 }
 
 fn selection(id: impl Into<ElementId>, name: impl Into<SharedString>, on: bool) -> Stateful<Div> {
-    action(id, name, None).when(on, |d| d.child(icon("\u{e73e}", 16.).text_color(rgb(LIME))))
+    action(id, name, None).when(on, |d| {
+        d.child(icon("\u{e73e}", 16.).text_color(rgb(FOCUS)))
+    })
 }
 
 fn switch(on: bool) -> Div {
@@ -202,8 +204,8 @@ fn switch(on: bool) -> Div {
         .h(px(22.))
         .rounded_full()
         .border_2()
-        .border_color(if on { rgb(LIME) } else { rgba(0xffffff70) })
-        .bg(if on { rgb(LIME) } else { rgba(0x0a0e105e) })
+        .border_color(if on { rgb(FOCUS) } else { rgba(0xffffff70) })
+        .bg(if on { rgb(FOCUS) } else { rgba(0x0a0e105e) })
         .child(
             div()
                 .absolute()
@@ -211,7 +213,7 @@ fn switch(on: bool) -> Div {
                 .top(px(2.))
                 .size(px(14.))
                 .rounded_full()
-                .bg(rgb(if on { 0x22281b } else { SECONDARY })),
+                .bg(rgb(if on { BG } else { SECONDARY })),
         )
 }
 
@@ -831,7 +833,7 @@ impl Library {
                             .max_w(relative(0.5)),
                     )
                     .when(selected, |d| {
-                        d.child(icon("\u{e73e}", 16.).text_color(rgb(LIME)))
+                        d.child(icon("\u{e73e}", 16.).text_color(rgb(FOCUS)))
                     })
                     .on_click(cx.listener(move |s, _, _, cx| s.select_shader(shader.clone(), cx)))
                     .into_any_element(),
@@ -993,12 +995,12 @@ impl Library {
                 .overflow_hidden()
                 .rounded(px(16.))
                 .bg(rgba(if page.episode_drawer() {
-                    0x101419e8
+                    (SURFACE << 8) | 0xe8
                 } else {
-                    0x101419bf
+                    PANEL_GLASS
                 }))
                 .border_1()
-                .border_color(rgba(0xffffff45))
+                .border_color(rgba(HOVER_EDGE))
                 .child(header)
                 .child(
                     content

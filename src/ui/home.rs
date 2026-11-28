@@ -149,6 +149,32 @@ impl Home {
             .any(|f| f.pending.is_some())
     }
 
+    pub(super) fn server_status(&self, origin: &str) -> &'static str {
+        let Some(source) = self.sources.iter().find(|s| s.origin == origin) else {
+            return "Connecting";
+        };
+        let ready = source
+            .feeds
+            .iter()
+            .any(|f| matches!(f.status, FeedStatus::Ready));
+        let failed = source
+            .feeds
+            .iter()
+            .any(|f| matches!(f.status, FeedStatus::Failed(_)));
+        match (ready, failed) {
+            (true, false) => "Connected",
+            (true, true) => "Limited",
+            _ if source
+                .feeds
+                .iter()
+                .all(|f| matches!(f.status, FeedStatus::Failed(_))) =>
+            {
+                "Unavailable"
+            }
+            _ => "Connecting",
+        }
+    }
+
     pub(super) fn continue_ready(&self, origin: Option<&str>) -> bool {
         self.sources
             .iter()

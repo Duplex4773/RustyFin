@@ -29,26 +29,35 @@ pub(in crate::ui) fn credit_ranges(
     item: &Item,
     w: &Window,
 ) -> (Range<usize>, Range<usize>) {
-    let width = f32::from(w.viewport_size().width) - 2. * detail::detail_inset(w);
+    let width = f32::from(w.viewport_size().width) - 2. * CONTENT_GUTTER;
     (
         page_range(
             state.cast_start,
             item.people.as_ref().map_or(0, Vec::len),
-            width,
+            if item.kind == "Series" {
+                super::series::sidebar_width(w) - 30.
+            } else {
+                width
+            },
             CAST_WIDTH,
         ),
         page_range(
             state.extra_start,
             state.extra_items().count(),
-            width,
+            if item.kind == "Series" {
+                super::series::content_width(w)
+            } else {
+                width
+            },
             EXTRA_WIDTH,
         ),
     )
 }
 
-fn card(id: ElementId, width: f32) -> Stateful<Div> {
-    div()
+fn card(id: ElementId, width: f32, name: String, cx: &App) -> Stateful<Div> {
+    let control = div()
         .id(id)
+        .relative()
         .focusable()
         .tab_stop(true)
         .cursor_pointer()
@@ -60,7 +69,8 @@ fn card(id: ElementId, width: f32) -> Stateful<Div> {
         .gap_1()
         .p_1()
         .hover(|s| s.bg(rgb(SURFACE)))
-        .focus(|s| s.bg(rgb(ACTIVE)).border_1().border_color(rgb(LIME)))
+        .focus(|s| s.bg(rgb(ACTIVE)).border_1().border_color(rgb(FOCUS)));
+    accessibility::keyboard_focus(accessibility::button(control, name, None, false), cx)
 }
 
 impl Library {
@@ -212,13 +222,23 @@ impl Library {
     }
 
     pub(super) fn credit_cards(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
-        let (cast, extras) = credit_ranges(&self.state, item, w);
-        let mut view = div()
-            .px(px(detail::detail_inset(w)))
+        div()
+            .px(px(CONTENT_GUTTER))
             .pb_4()
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_2()
+            .children(self.cast_cards(item, w, cx))
+            .child(self.extra_cards(item, w, cx))
+    }
+
+    pub(super) fn cast_cards(
+        &self,
+        item: &Item,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let (cast, _) = credit_ranges(&self.state, item, w);
         let people = item.people.as_deref().unwrap_or_default();
         if !cast.is_empty() {
             let mut cards = div().flex().gap(px(GAP));
@@ -249,29 +269,68 @@ impl Library {
                         .collect();
                     portrait = portrait.child(label(initials, 22., MUTED));
                 }
+                portrait = portrait.relative().child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgba(REST_EDGE)),
+                );
                 let role = person
                     .role
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .or(person.kind.as_deref());
                 cards = cards.child(
-                    card(("cast-member", i).into(), CAST_WIDTH)
-                        .child(portrait)
-                        .child(title(person.name.clone(), 14.).truncate())
-                        .when_some(role, |d, r| {
-                            d.child(
-                                label(r.to_owned(), 13., MUTED)
-                                    .line_height(px(17.))
-                                    .line_clamp(2),
-                            )
-                        })
-                        .on_click(cx.listener(move |s, _, w, cx| s.open_person(&id, w, cx))),
+                    card(
+                        ("cast-member", i).into(),
+                        CAST_WIDTH,
+                        role.map_or_else(
+                            || person.name.clone(),
+                            |r| format!("{}, {r}", person.name),
+                        ),
+                        cx,
+                    )
+                    .child(portrait)
+                    .child(title(person.name.clone(), 14.).truncate())
+                    .when_some(role, |d, r| {
+                        d.child(
+                            label(r.to_owned(), 13., MUTED)
+                                .line_height(px(17.))
+                                .line_clamp(2),
+                        )
+                    })
+                    .on_click(cx.listener(move |s, _, w, cx| s.open_person(&id, w, cx))),
                 );
             }
-            view = view
-                .child(self.credit_heading(true, &cast, people.len(), cx))
-                .child(cards);
+            return Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(self.credit_heading(true, &cast, people.len(), cx))
+                    .child(div().w_full().relative().child(cards).when(
+                        cast.end < people.len(),
+                        |d| {
+                            let base = if item.kind == "Series" { SURFACE } else { BG };
+                            d.child(div().absolute().right_0().top_0().bottom_0().w(px(42.)).bg(
+                                linear_gradient(
+                                    90.,
+                                    linear_color_stop(rgba(base << 8), 0.),
+                                    linear_color_stop(rgba((base << 8) | 210), 1.),
+                                ),
+                            ))
+                        },
+                    )),
+            );
         }
+        None
+    }
+
+    pub(super) fn extra_cards(&self, item: &Item, w: &Window, cx: &mut Context<Self>) -> Div {
+        let (_, extras) = credit_ranges(&self.state, item, w);
+        let mut view = div();
         let notice = self.extras_notice(cx);
         if !extras.is_empty() || notice.is_some() {
             let mut cards = div().flex().gap(px(GAP));
@@ -303,12 +362,15 @@ impl Library {
                     still = still.child(icon(PLAY, 24.).text_color(rgb(MUTED)));
                 }
                 cards = cards.child(
-                    card(("extra-still", i).into(), EXTRA_WIDTH)
-                        .child(still)
-                        .child(title(extra.name.clone(), 14.).truncate())
-                        .on_click(
-                            cx.listener(move |s, _, w, cx| s.open_item(extra.clone(), w, cx)),
-                        ),
+                    card(
+                        ("extra-still", i).into(),
+                        EXTRA_WIDTH,
+                        extra.name.clone(),
+                        cx,
+                    )
+                    .child(still)
+                    .child(title(extra.name.clone(), 14.).truncate())
+                    .on_click(cx.listener(move |s, _, w, cx| s.open_item(extra.clone(), w, cx))),
                 );
             }
             view = view

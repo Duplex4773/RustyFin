@@ -774,6 +774,7 @@ impl Mpv {
             video_presented: self.video_presented,
             position: self.number(c"time-pos"),
             duration: self.number(c"duration"),
+            buffered_end: self.number(c"demuxer-cache-time"),
             paused: paused != 0,
             ended,
         };

@@ -161,7 +161,11 @@ impl ShelfKind {
 
     pub fn art(self, item: &Item) -> Option<Art> {
         match self {
-            Self::Continue => item.landscape(),
+            // Keep landscape thumbnails sharp at high Windows display scales.
+            Self::Continue => Some(Art {
+                max_width: 720,
+                ..item.landscape()?
+            }),
             Self::RecentTv | Self::RecentMovies => item.art(ArtKind::Poster),
         }
     }
@@ -634,9 +638,14 @@ impl Server {
                 .get(&["Items"])
                 .query(&[("parentId", item.id.as_str()), ("sortBy", "SortName")]),
         };
+        let fields = if item.kind == "Series" {
+            "Overview,Genres,MediaSources,MediaStreams,ProviderIds"
+        } else {
+            FIELDS
+        };
         request = request.query(&[
             ("userId", self.user_id()?),
-            ("fields", FIELDS),
+            ("fields", fields),
             ("startIndex", &offset.to_string()),
             ("limit", &PAGE_SIZE.to_string()),
         ]);

@@ -7,7 +7,8 @@ impl Library {
             .track_scroll(&self.state.scroll)
             .size_full()
             .overflow_y_scroll()
-            .p_5()
+            .py_5()
+            .px(px(CONTENT_GUTTER))
             .child(
                 div()
                     .flex()

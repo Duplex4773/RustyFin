@@ -3,17 +3,25 @@ use crate::ui::playback::{EpisodeDirection, PlayerMenu};
 mod episode_transport;
 mod performance_overlay;
 
-pub(super) const PANEL: u32 = 0x15161b;
+pub(super) const PANEL: u32 = SURFACE;
 const EDGE: f32 = 14.;
-const CONTROLS_HEIGHT: f32 = 112.;
+const DOCK_PADDING: f32 = 10.;
+const DOCK_GAP: f32 = 4.;
+const CONTROLS_HEIGHT: f32 = OSD_MARGIN_BOTTOM
+    + 2.
+    + 2. * DOCK_PADDING
+    + CLOCK_HEIGHT
+    + SEEK_HIT_HEIGHT
+    + DOCK_GAP
+    + OSD_TARGET;
 const SEEK_HIT_HEIGHT: f32 = 22.;
 const CLOCK_HEIGHT: f32 = 20.;
-const GLASS: u32 = 0x12161aac;
+
 pub(in crate::ui) const PREVIEW_WIDTH: f32 = 196.;
 const PREVIEW_HEIGHT: f32 = PREVIEW_WIDTH * 9. / 16.;
 
 fn rail(width: f32) -> (f32, f32) {
-    let start = (width * 0.03).clamp(EDGE, 56.);
+    let start = OSD_MARGIN_X + 1. + OSD_MARGIN_X;
     (start, (width - 2. * start).max(1.))
 }
 fn fraction_at(x: Pixels, w: &Window) -> f32 {
@@ -30,23 +38,18 @@ fn floating(bounds: Bounds<Pixels>) -> Div {
 }
 
 fn transport_button(id: &'static str, code: &'static str) -> Stateful<Div> {
-    icon_button(id, icon(code, 21.))
+    icon_button(id, icon(code, OSD_ICON))
+        .size(px(OSD_TARGET))
         .text_color(rgb(0xffffff))
         .hover(|d| d.bg(rgba(0xffffff2a)))
 }
 
-fn capsule() -> Div {
-    div()
-        .occlude()
-        .flex_none()
-        .flex()
-        .items_center()
-        .px(px(5.))
-        .h(px(42.))
-        .rounded_full()
-        .bg(rgba(GLASS))
+fn osd_glass(panel: Div) -> Div {
+    panel
+        .rounded(px(OSD_RADIUS))
+        .bg(rgba(OSD_GLASS))
         .border_1()
-        .border_color(rgba(0xffffff50))
+        .border_color(rgba(GLASS_WHITE_SOFT))
 }
 
 // Outline the glyphs so the picture remains visible behind the text.
@@ -260,7 +263,16 @@ impl Library {
             0.
         };
         let preview = self.seek_preview_fraction(p, w);
-        let thickness = if preview.is_some() { 5. } else { 3. };
+        let thickness = if preview.is_some() {
+            SEEK_TRACK_ACTIVE
+        } else {
+            SEEK_TRACK
+        };
+        let buffered = if duration > 0. && p.status.buffered_end.is_finite() {
+            (p.status.buffered_end / duration).clamp(0., 1.) as f32
+        } else {
+            0.
+        };
         let chapters = self
             .playing
             .iter()
@@ -297,19 +309,24 @@ impl Library {
                     .w_full()
                     .h(px(thickness))
                     .rounded_full()
-                    .bg(rgba(0xffffff70))
-                    .shadow(vec![BoxShadow {
-                        color: rgba(0x05080ab0).into(),
-                        offset: Point::default(),
-                        blur_radius: px(2.),
-                        spread_radius: px(1.),
-                    }])
+                    .bg(rgba(0xffffff20))
+                    .when(buffered > progress, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .left(relative(progress))
+                                .top_0()
+                                .h_full()
+                                .w(relative(buffered - progress))
+                                .bg(rgba(OSD_BUFFER)),
+                        )
+                    })
                     .child(
                         div()
                             .h_full()
                             .w(relative(progress))
                             .rounded_full()
-                            .bg(rgb(LIME)),
+                            .bg(rgb(TEXT)),
                     )
                     .children(chapters.filter_map(|chapter| {
                         let at = chapter.start_position_ticks as f64 / 10_000_000.;
@@ -331,9 +348,9 @@ impl Library {
                         div()
                             .absolute()
                             .left(relative(progress))
-                            .ml(px(-4.5))
-                            .top(px((thickness - 9.) / 2.))
-                            .size(px(9.))
+                            .ml(px(-SEEK_THUMB / 2.))
+                            .top(px((thickness - SEEK_THUMB) / 2.))
+                            .size(px(SEEK_THUMB))
                             .rounded_full()
                             .bg(rgb(0xffffff))
                             .border_1()
@@ -421,7 +438,7 @@ impl Library {
             } else {
                 82.
             }))
-            .h(px(28.))
+            .h(px(OSD_TARGET))
             .cursor_pointer()
             .flex()
             .items_center()
@@ -527,7 +544,7 @@ impl Library {
         )
         .when(
             self.player.as_ref().is_some_and(|p| p.panel_open) && self.controls.menu == page,
-            |d| d.text_color(rgb(LIME)),
+            |d| d.text_color(rgb(TEXT)),
         )
         .on_click(cx.listener(move |s, _, w, cx| s.toggle_player_menu(page, w, cx)))
     }
@@ -541,7 +558,7 @@ impl Library {
         tip(
             div()
                 .id(name)
-                .size(px(36.))
+                .size(px(OSD_TARGET))
                 .flex_none()
                 .relative()
                 .rounded_full()
@@ -552,7 +569,7 @@ impl Library {
                         .absolute()
                         .left(px(7.))
                         .top(px(8.))
-                        .size(px(21.))
+                        .size(px(OSD_ICON))
                         .rounded_full()
                         .border_2()
                         .border_color(rgb(TEXT))
@@ -589,22 +606,21 @@ impl Library {
     }
 
     fn playback_title(&self, p: &Player, width: f32, cx: &mut Context<Self>) -> Div {
-        let edge = rail(width).0;
-        let mut view = div()
-            .absolute()
-            .top(px(EDGE))
-            .left(px(edge))
-            .max_w(px((width - 2. * edge).min(700.).max(1.)))
+        let mut view = osd_glass(div())
+            .max_w(px((width - 2. * OSD_MARGIN_X).min(700.).max(1.)))
+            .py(px(5.))
+            .pl(px(5.))
+            .pr(px(14.))
             .flex()
-            .items_start()
-            .gap(px(9.))
-            .child(self.exit_player(cx).bg(rgba(0x10141790)));
+            .items_center()
+            .gap_2()
+            .child(self.exit_player(cx));
         if let Some(item) = &self.playing {
             let series = item.series_name.as_ref().filter(|s| !s.is_empty());
             let name = series.unwrap_or(&item.name);
             let detail = match (series, item.parent_index_number, item.index_number) {
                 (Some(_), Some(season), Some(episode)) => {
-                    format!("S{season} E{episode} · {}", item.name)
+                    format!("S{season}:E{episode} · {}", item.name)
                 }
                 (Some(_), _, _) => item.name.clone(),
                 _ => String::new(),
@@ -614,9 +630,9 @@ impl Library {
                 .flex()
                 .flex_col()
                 .items_start()
-                .child(overlay_text(name.clone(), 21., FontWeight::SEMIBOLD));
+                .child(title(name.clone(), 16.).line_height(px(21.)).truncate());
             if !detail.is_empty() {
-                info = info.child(overlay_text(detail, 14., FontWeight::MEDIUM));
+                info = info.child(label(detail, 13., BODY).line_height(px(17.)).truncate());
             }
             let status = if self.controls.remote_scrub {
                 Some("← → preview   Enter / A seek   Esc / B cancel")
@@ -637,7 +653,14 @@ impl Library {
 
     fn transport(&self, p: &Player, w: &Window, cx: &mut Context<Self>) -> Div {
         let width = f32::from(w.viewport_size().width);
-        let mut playback = capsule();
+        let group = || {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(if width < 800. { 2. } else { 6. }))
+        };
+        let mut playback = group();
         if p.audio_only {
             playback = playback.child(self.exit_player(cx));
         }
@@ -671,7 +694,7 @@ impl Library {
             );
         }
 
-        let mut utility = capsule();
+        let mut utility = group();
         if p.pcm_volume.is_some() {
             utility = utility.child(self.volume_control(w, p, cx));
         }
@@ -699,10 +722,12 @@ impl Library {
         if !p.audio_only && self.has_episode_drawer() {
             utility = utility.child(
                 self.menu_button("Episodes", "\u{e8fd}", PlayerMenu::Episodes, cx)
-                    .w_auto()
-                    .px_2()
-                    .gap_1()
-                    .child(label("Episodes", 13., TEXT)),
+                    .when(width >= 800., |d| {
+                        d.w_auto()
+                            .px_2()
+                            .gap_1()
+                            .child(label("Episodes", 13., TEXT))
+                    }),
             );
         }
         utility = utility
@@ -723,62 +748,53 @@ impl Library {
                 .track_focus(&self.menu_focus.fullscreen)
                 .on_click(|_, w, _| w.toggle_fullscreen()),
             );
-        let mut row = div()
+        let row = div()
             .w_full()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .justify_between()
             .child(playback)
-            .child(div().flex_1());
-        if p.seekable
-            && let Some(g) = self.controls.segments.iter().find(|g| {
-                !matches!(g.kind.as_str(), "Intro" | "Outro") && g.active(p.status.position)
-            })
-        {
-            let end = g.end_ticks as f64 / 10_000_000.;
-            row = row.child(
-                pill("skip-segment", format!("Skip {}", g.kind), None, true).on_click(cx.listener(
-                    move |s, _, _, cx| {
-                        if let Some(p) = &s.player {
-                            s.control(Some(end - p.status.position), cx);
-                        }
-                    },
-                )),
-            );
-        }
-        div()
-            .w_full()
-            .h(px(CONTROLS_HEIGHT))
+            .child(utility);
+        osd_glass(div().occlude())
             .flex_none()
-            .px(px(rail(width).0))
-            .pb(px(EDGE))
+            .mx(px(OSD_MARGIN_X))
+            .mb(px(OSD_MARGIN_BOTTOM))
+            .px(px(OSD_MARGIN_X))
+            .py(px(DOCK_PADDING))
             .flex()
             .flex_col()
-            .justify_end()
-            .gap(px(6.))
+            .gap(px(DOCK_GAP))
             .when(p.seekable && p.status.duration > 0., |d| {
                 d.child(self.timeline(p, w, cx))
             })
-            .child(row.child(utility))
+            .child(row)
     }
 
-    fn segment_skip_button(&self, p: &Player, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+    fn segment_skip_button(
+        &self,
+        p: &Player,
+        show_bar: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
         if !p.status.ready || !p.seekable || p.audio_only || p.panel_open || self.scrub.is_some() {
             return None;
         }
         let segment = self.controls.segments.iter().find(|g| {
-            (g.kind == "Intro" || g.kind == "Outro" && !self.controls.watching_credits)
-                && g.active(p.status.position)
+            (match g.kind.as_str() {
+                "Intro" => true,
+                "Outro" => !self.controls.watching_credits,
+                _ => show_bar,
+            }) && g.active(p.status.position)
         })?;
         let end = (segment.end_ticks as f64 / 10_000_000.).min(p.status.duration);
         let start = segment.start_ticks;
         if end <= p.status.position {
             return None;
         }
-        let label = if segment.kind == "Intro" {
-            "Skip intro"
-        } else {
-            "Skip credits"
+        let label = match segment.kind.as_str() {
+            "Intro" => "Skip intro".to_owned(),
+            "Outro" => "Skip credits".to_owned(),
+            other => format!("Skip {other}"),
         };
         Some(
             pill("skip-intro-or-credits", label, Some(NEXT), false)
@@ -870,9 +886,7 @@ impl Library {
                         }
                     }),
             );
-            if show_bar {
-                root = root.child(self.playback_title(p, width, cx).opacity(chrome_opacity));
-            }
+
             if p.caption_height > 0. {
                 let text = self
                     .controls
@@ -899,42 +913,51 @@ impl Library {
                 }
             }
         }
+        let mut upper = div()
+            .absolute()
+            .left(px(OSD_MARGIN_X))
+            .top(px(EDGE))
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(px(8.));
+        if show_bar && !p.audio_only {
+            upper = upper.child(self.playback_title(p, width, cx).opacity(chrome_opacity));
+        }
         if let Some((message, shown)) = self.controls.profile_notice
             && shown.elapsed() < Duration::from_secs(5)
         {
-            let (title_text, detail) = message
+            let (heading, detail) = message
                 .split_once('\n')
-                .map_or((message, None), |(name, detail)| (name, Some(detail)));
-            let bounds = Bounds::new(
-                point(
-                    px(rail(width).0),
-                    px(if show_bar && !p.audio_only { 85. } else { EDGE }),
-                ),
-                size(
-                    px((width - 2. * EDGE).clamp(1., if detail.is_some() { 360. } else { 290. })),
-                    px(if detail.is_some() { 58. } else { 38. }),
-                ),
-            );
-            root = root.child(
-                floating(bounds)
-                    .rounded(px(8.))
-                    .bg(rgba(0x11161bef))
-                    .flex()
-                    .flex_col()
-                    .justify_center()
+                .map_or((message, None), |(a, b)| (a, Some(b)));
+            upper = upper.child(
+                osd_glass(div())
+                    .max_w(px((width - 2. * OSD_MARGIN_X).min(390.)))
                     .px_3()
-                    .overflow_hidden()
-                    .child(title(title_text, 14.).line_clamp(1))
-                    .when_some(detail, |d, text| {
-                        d.child(label(text, 12., 0xc8cdce).mt(px(2.)).line_clamp(2))
-                    }),
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(icon("\u{e946}", 16.).text_color(rgb(0xa7d5c7)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(title(heading, 14.).line_height(px(18.)).line_clamp(2))
+                            .when_some(detail, |d, text| {
+                                d.child(label(text, 12., BODY).line_height(px(16.)).line_clamp(2))
+                            }),
+                    )
+                    .children(accessibility::status(message)),
             );
         }
         if p.performance.enabled {
-            root = root.child(self.performance_overlay(p, width));
+            upper = upper.child(self.performance_overlay(p, width));
         }
+        root = root.child(upper);
         let credits = self.credits_prompt();
-        let mut skip = self.segment_skip_button(p, cx);
+        let mut skip = self.segment_skip_button(p, show_bar, cx);
         if credits.is_none()
             && self.seek_preview_fraction(p, w).is_none()
             && let Some(skip) = skip.take()
@@ -1103,8 +1126,13 @@ impl Library {
             let x = (left + f * length - sw * 0.5).clamp(EDGE, (width - EDGE - sw).max(EDGE));
             // Keep an edge-clamped preview clear of the elapsed/remaining clocks.
             let near_clock = x < left + 72. || x + sw > width - left - 72.;
-            let bottom =
-                EDGE + 42. + 6. + SEEK_HIT_HEIGHT + if near_clock { CLOCK_HEIGHT + 5. } else { 6. };
+            let bottom = OSD_MARGIN_BOTTOM
+                + 1.
+                + DOCK_PADDING
+                + OSD_TARGET
+                + DOCK_GAP
+                + SEEK_HIT_HEIGHT
+                + if near_clock { CLOCK_HEIGHT + 5. } else { 6. };
             let bounds = Bounds::new(point(px(x), px(height - bottom - sh)), size(px(sw), px(sh)));
             root = root.child(
                 floating(bounds)

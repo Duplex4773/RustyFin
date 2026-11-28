@@ -40,7 +40,7 @@ impl Library {
             .track_scroll(&self.state.scroll)
             .flex_1()
             .min_h_0()
-            .px_5();
+            .px(px(CONTENT_GUTTER));
         if let Screen::Guide(channel) = &self.state.screen {
             let target = *channel.clone();
             list = list.child(
@@ -269,7 +269,8 @@ impl Library {
             .flex_col()
             .child(
                 div()
-                    .p_5()
+                    .py_5()
+                    .px(px(CONTENT_GUTTER))
                     .flex()
                     .flex_col()
                     .gap_2()

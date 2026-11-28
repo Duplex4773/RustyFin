@@ -4,10 +4,22 @@ use std::ops::Range;
 const INDEX_WIDTH: f32 = 24.;
 
 impl CatalogGrid {
-    pub(in crate::ui) fn for_wall(w: &Window, alphabetical: bool, size: PosterSize) -> Self {
+    pub(in crate::ui) fn for_wall(w: &Window, screen: &Screen, size: PosterSize) -> Self {
         let available = f32::from(w.viewport_size().width)
-            - 2. * PAD
-            - if alphabetical { INDEX_WIDTH } else { 0. };
+            - 2. * CONTENT_GUTTER
+            - if screen.alphabetical() {
+                INDEX_WIDTH
+            } else {
+                0.
+            };
+        if screen.spotlight() {
+            let target = match size {
+                PosterSize::Small => 112.,
+                PosterSize::Medium => 145.,
+                PosterSize::Large => 185.,
+            };
+            return Self::fit(available, w.scale_factor(), target, 28);
+        }
         Self::wall_fit(available, w.scale_factor(), size)
     }
 
@@ -61,13 +73,13 @@ impl UniformListDecoration for VisibleRows {
 impl Library {
     pub(super) fn catalog_wall(&self, q: &CatalogQuery, w: &Window, cx: &mut Context<Self>) -> Div {
         let alphabet = self.state.screen.alphabetical();
-        let layout = CatalogGrid::for_wall(w, alphabet, self.prefs.poster_size);
+        let layout = CatalogGrid::for_wall(w, &self.state.screen, self.prefs.poster_size);
         let wall = &self.state.wall;
         let mut body = div().flex_1().min_h_0().flex().flex_col();
         if let Some(error) = wall.page_error.as_ref().or(wall.index_error.as_ref()) {
             body = body.child(
                 div()
-                    .px(px(PAD))
+                    .px(px(CONTENT_GUTTER))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -91,7 +103,7 @@ impl Library {
                 "Loading…"
             };
             return body.when(wall.page_error.is_none(), |d| {
-                d.child(label(message, 15., MUTED).px(px(PAD)).py_5())
+                d.child(label(message, 15., MUTED).px(px(CONTENT_GUTTER)).py_5())
             });
         }
         let square = matches!(q.kind, "MusicArtist" | "MusicAlbum" | "Audio");
@@ -102,6 +114,11 @@ impl Library {
             );
         let image_height = (layout.card_width * if square { 1. } else { 1.5 }).round();
         let row_height = image_height + 33. + POSTER_LIFT;
+        if self.catalog_preview_visible() && !self.state.screen.spotlight() {
+            // A short gallery's tray sits immediately below its last row.
+            // Longer libraries keep the tray visible as the wall scrolls.
+            body = body.max_h(px(total.div_ceil(layout.columns) as f32 * row_height));
+        }
         if !wall.visible.is_empty()
             && (wall.card_width != layout.card_width || wall.columns != layout.columns)
         {
@@ -174,22 +191,53 @@ impl Library {
         cx: &mut Context<Self>,
     ) -> Div {
         let focused = self.keyboard && self.focus.is_focused(w);
-        let mut line = div().size_full().flex().px(px(PAD)).gap(px(CATALOG_GAP));
+        let mut line = div()
+            .size_full()
+            .flex()
+            .px(px(CONTENT_GUTTER))
+            .gap(px(CATALOG_GAP));
         for i in indices {
             line = if let Some(item) = self.state.wall.item(i) {
                 let id = ("poster", i).into();
-                let selected = focused && self.state.selection == i;
-                let face =
+                let preview = self.catalog_preview_visible();
+                let selected = (focused || preview) && self.state.selection == i;
+                let mut face =
                     self.catalog_face(item, layout.card_width, layout.poster, selected, &id, cx);
+                if selected && preview {
+                    let source = self.state.wall.selected_bounds.clone();
+                    face = face.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(catalog_poster::image_height(item, layout.card_width))
+                            .child(
+                                canvas(
+                                    move |bounds, _, _| source.set(Some((i, bounds))),
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0()
+                                .size_full(),
+                            ),
+                    );
+                }
                 line.child(
                     accessibility::poster_button(
                         card_frame(face, layout.card_width, selected, id),
                         item,
                         accessibility::Poster::Browse(i),
-                        selected,
+                        focused && self.state.selection == i,
                     )
-                    .on_click(cx.listener(move |s, _, w, cx| {
-                        if let Some(item) = s.state.wall.item(i).cloned() {
+                    .on_click(cx.listener(move |s, e: &ClickEvent, w, cx| {
+                        if preview && e.click_count() == 1 && !e.is_keyboard() {
+                            s.state.selection = i;
+                            s.state.wall.rail_focus = None;
+                            s.state.wall.needs_prefetch = true;
+                            s.focus.focus(w);
+                            cx.notify();
+                        } else if let Some(item) = s.state.wall.item(i).cloned() {
                             s.open_item(item, w, cx);
                         }
                     })),
@@ -249,14 +297,15 @@ impl Library {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(if focused {
                         BG
-                    } else if active == Some(letter) {
-                        LIME
                     } else if available {
-                        TEXT
+                        BODY
                     } else {
                         0x686b71
                     }))
-                    .when(focused, |d| d.bg(rgb(LIME)))
+                    .when(!focused && active == Some(letter), |d| {
+                        d.bg(rgb(SELECTED)).text_color(rgb(TEXT))
+                    })
+                    .when(focused, |d| d.bg(rgb(FOCUS)))
                     .child(letter.to_string())
                     .when(available, |d| {
                         d.cursor_pointer()

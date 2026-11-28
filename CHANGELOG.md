@@ -2,6 +2,56 @@
 
 Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
+## 2026-11-28 - Smoother ambient gradients
+
+- Dark ambient lighting now preserves fractional colour levels and uses a stationary dither at the display’s native pixel density. This smooths visible bands across large windows, including the indigo background used when artwork is unavailable.
+- In a lossless capture of maximized Settings on a 4K display, the longest run of identical colour in the same 1,000-pixel sample fell from 452 pixels to two.
+
+## 2026-11-28 - Ambient lighting and utility panels
+
+- Settings and other browsing pages borrow two hues from the featured artwork. A softly lit obsidian and midnight-indigo background appears when artwork is unavailable.
+- Settings groups playback, controls, downloads, connections and advanced options in translucent panels. Customise Home groups shelf order and visibility separately from pinned shortcuts. Both pages switch from one column to two at 1,020 logical pixels.
+- Settings rows give distinct hover, press and keyboard focus feedback. Switches respect the Windows animation preference. Shelf reorder buttons identify the shelf they move and align across rows.
+- Discover, Browse, search and title-detail shelves align to a shared 24 px side margin.
+
+## 2026-11-28 - Discover shelves, title details and player controls
+
+- Continue Watching uses smaller landscape cards. Recently Added uses larger posters, and the hero leaves room for the TV shelf captions on desktop. Discover shows the current server’s connection status in the navigation bar.
+- Movie and show recommendations display the year and available star rating beneath clean poster artwork. Both detail views use the same glass back button. Cast portraits have a fine outline and a soft fade at the end of a continuing row.
+- Series sidebars use compact cards and group the selected episode’s video, audio and subtitle formats into subtle badges. Episode rows pair white semibold titles with silver synopses and a muted emerald watched check.
+- Playback controls share a floating translucent dock. The seekbar distinguishes played and buffered video, expands on hover and has a larger scrubber. The title header and playback notices share the dock’s glass styling.
+
+## 2026-11-28 - Discover and series details redesign
+
+- White Play and Resume buttons, translucent secondary actions and a floating navigation gradient sit over artwork on an obsidian background.
+- Discover uses a shorter hero and up to six landscape Continue Watching cards. Episode numbers and time remaining appear below each still, with a thin progress line along its bottom edge. Recently Added uses clean poster artwork.
+- Series pages pair the season and episode list with cast, episode-specific technical specs and show information. Episode rows show larger stills, runtime, synopsis and a watched checkmark. Play appears on hover or keyboard selection. The sidebar stacks below the list in narrow windows.
+
+## 2026-11-28 - Cinematic colour and contrast
+
+- Discover, Favourites, Collections and title details pick up a soft light from the featured artwork. The Home wash fades to a blue-black canvas by Recently Added Movies.
+- Play, Resume and featured Details use electric cyan. The active navigation destination gains an underline. Settings, menus and the Browse tray use distinct surface and hover colours.
+- Posters have a dark bottom fade, fine hover edges and a two-tone focus ring. White titles and silver metadata stay legible across the library and player controls.
+
+## 2026-11-28 - Cinematic spotlight and Browse poster gallery
+
+- Favourites and Collections feature the selected title's artwork, logo and synopsis above a compact poster grid. Browse shows the selected title in a details tray below the gallery.
+- Click a poster or move with the arrow keys to preview a title. Open Details with the button, Enter or a double-click. The poster moves into the details header when Windows animations are enabled.
+
+## 2026-11-28 - Search actions, Settings layout and series resume
+
+- The best search result has a Details button beside Play or Resume. Windows accessibility tools identify the title for each action.
+- Settings uses a centered reading column on wide displays. Video playback settings group the playback, video output, subtitle and audio controls.
+- Series details show the current episode, progress and time remaining with the main playback action. Season-list Play buttons sit closer to their episodes on wide displays.
+
+## 2026-11-28 - Title details, pairing and search
+
+- Quick Connect exposes the pairing instructions and reads the code digit by digit to screen readers. Episode, cast and extras cards expose their names and actions to Windows accessibility tools.
+- Series pages load episodes independently of Next Up. If Jellyfin cannot retrieve the resume episode, viewers can play an episode directly or retry Next Up from the header.
+- Search shows each category as its server responds and keeps focus on the selected result as more arrive.
+- Retrying a failed Favourite or watched-state change resubmits the original action to the title’s server.
+- Movies and shows without a backdrop use a compact header with the poster when available.
+
 ## 2026-11-27 - Discover crossfades and playback menu motion
 
 - Discover keeps the current featured artwork visible until the next image loads, then crossfades between the two. The navigation tint and artwork wash follow the incoming image.

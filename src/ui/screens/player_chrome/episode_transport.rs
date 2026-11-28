@@ -25,14 +25,14 @@ impl Library {
         let enabled = self.episode_target(direction).is_some() && !self.busy;
         let button = div()
             .id(direction.label())
-            .size(px(36.))
+            .size(px(OSD_TARGET))
             .rounded_full()
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .text_color(rgb(if enabled { TEXT } else { MUTED }))
-            .child(icon(direction.glyph(), 20.));
+            .child(icon(direction.glyph(), OSD_ICON));
         if !enabled {
             return button.opacity(0.48);
         }
@@ -123,7 +123,7 @@ impl Library {
                     div()
                         .min_w_0()
                         .flex_1()
-                        .child(label(direction.label(), 12., LIME))
+                        .child(label(direction.label(), 12., BODY))
                         .child(title(item.name.clone(), 16.).truncate())
                         .when(!info.is_empty(), |d| d.child(label(info, 12., MUTED)))
                         .when_some(

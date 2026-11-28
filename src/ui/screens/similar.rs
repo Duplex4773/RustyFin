@@ -14,7 +14,7 @@ impl ViewState {
     }
 
     pub(in crate::ui) fn similar_cards(&self, w: &Window) -> (CatalogGrid, Range<usize>, &[Item]) {
-        let width = f32::from(w.viewport_size().width) - 2. * detail::detail_inset(w);
+        let width = f32::from(w.viewport_size().width) - 2. * CONTENT_GUTTER;
         let layout = CatalogGrid::fit(width, w.scale_factor(), 192., 11);
         let items = self
             .similar
@@ -70,7 +70,7 @@ impl Library {
     pub(super) fn similar_section(&self, w: &Window, cx: &mut Context<Self>) -> Option<Div> {
         let result = self.state.similar.as_ref()?;
         let mut section = div()
-            .px(px(detail::detail_inset(w)))
+            .px(px(CONTENT_GUTTER))
             .py_3()
             .flex()
             .flex_col()
@@ -135,7 +135,7 @@ impl Library {
             let card = self.card(
                 &items[i],
                 layout.card_width,
-                CardLayout::Catalog {
+                CardLayout::Recommendation {
                     poster: layout.poster,
                 },
                 focus.is_focused(w),
