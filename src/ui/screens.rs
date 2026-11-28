@@ -114,7 +114,7 @@ fn section_heading(text: impl Into<SharedString>, size: f32) -> Div {
     accessibility::heading(title(text.clone(), size), text, 2)
 }
 
-fn reveal_menu(view: Div, id: impl Into<ElementId>, offset: Point<Pixels>) -> AnyElement {
+fn reveal_panel(view: Div, id: impl Into<ElementId>, offset: Point<Pixels>) -> AnyElement {
     if !scrolling::animations_enabled() {
         return view.into_any_element();
     }
@@ -457,13 +457,24 @@ impl Library {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let face = self.shelf_face(item, width, layout, selected, &id, cx);
-        let target = item.clone();
-        card_frame(face, width, selected, id).on_click(cx.listener(
-            move |s, _, w, cx| match layout {
-                CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
-                CardLayout::Recommendation { .. } => s.open_item(target.clone(), w, cx),
+        let card = card_frame(face, width, selected, id.clone()).when(
+            matches!(layout, CardLayout::Shelf(ShelfKind::Continue)),
+            |card| {
+                let target = item.clone();
+                card.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |s, _, w, cx| {
+                        cx.stop_propagation();
+                        s.show_popup(id.clone(), discover::continue_menu(target.clone()), w, cx);
+                    }),
+                )
             },
-        ))
+        );
+        let target = item.clone();
+        card.on_click(cx.listener(move |s, _, w, cx| match layout {
+            CardLayout::Shelf(kind) => s.activate_home_item(kind, target.clone(), w, cx),
+            CardLayout::Recommendation { .. } => s.open_item(target.clone(), w, cx),
+        }))
     }
 
     fn shelf_face(
@@ -536,7 +547,10 @@ impl Library {
                     ),
             );
         }
-        picture = picture.child(poster_edge(div().absolute().inset_0(), selected, px(8.)));
+        let format_width = if continued { width - 36. } else { width };
+        picture = picture
+            .child(poster_edge(div().absolute().inset_0(), selected, px(8.)))
+            .children(self.card_format_strip(item, id, format_width, cx));
         if continued {
             let button = div()
                 .id("continue-actions")
@@ -553,10 +567,7 @@ impl Library {
                 .when(self.popup_menu.is_none(), |d| {
                     d.tooltip(|w, cx| Tooltip::new("More actions").build(w, cx))
                 })
-                .when(
-                    !selected && !self.popup_menu.as_ref().is_some_and(|(key, _)| key == id),
-                    |d| d.opacity(0.).group_hover("media-card", |d| d.opacity(1.)),
-                )
+                .hover(|d| d.bg(rgb(ACTIVE)))
                 .focus(|d| d.opacity(1.).border_1().border_color(rgb(FOCUS)));
             picture = picture.child(
                 self.popup_trigger(
@@ -1527,7 +1538,7 @@ impl Render for Library {
         } else {
             match &self.state.screen {
                 Screen::Detail(item, season) => self.detail(item, season.as_deref(), w, cx),
-                Screen::Discover => self.discover(tint, w, cx),
+                Screen::Discover => self.discover(tint, motion, w, cx),
                 Screen::Library(tab, q) => self.browse(*tab, q, w, cx),
                 Screen::Search(term) => self.search_view(term, w, cx),
                 Screen::Live(_) | Screen::Guide(_) | Screen::Timers(_) => self.live_view(cx),

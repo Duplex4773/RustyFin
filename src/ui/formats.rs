@@ -65,12 +65,39 @@ impl Library {
         }
         let items: Box<dyn Iterator<Item = &Item> + '_> =
             match &self.state.screen {
+                Screen::Discover => Box::new(self.shelves.iter().zip(&self.shelf_scroll).flat_map(
+                    |(shelf, scroll)| {
+                        shelf.items.iter().enumerate().filter_map(move |(i, item)| {
+                            let near = scroll.bounds_for_item(i).map_or(i < 6, |card| {
+                                let left = card.left() + scroll.offset().x;
+                                let viewport = scroll.bounds();
+                                left < viewport.right() + card.size.width
+                                    && left + card.size.width * 2. > viewport.left()
+                            });
+                            near.then_some(item)
+                        })
+                    },
+                )),
                 Screen::Library(..) => Box::new(self.state.wall.near_items()),
                 Screen::Search(_) => Box::new(self.state.search.groups.iter().flat_map(|g| {
                     &g.page.items[g.visible(screens::search_grid(g.kind, w).columns)]
                 })),
-                Screen::Detail(item, _) if item.kind != "Series" => {
-                    Box::new(self.state.page.iter().flat_map(|p| &p.items))
+                Screen::Detail(item, _) => {
+                    let (_, range, similar) = self.state.similar_cards(w);
+                    let (_, extras) = screens::credit_ranges(&self.state, item, w);
+                    Box::new(
+                        self.state
+                            .series_target
+                            .iter()
+                            .chain(self.state.page.iter().flat_map(|p| &p.items))
+                            .chain(&similar[range])
+                            .chain(
+                                self.state
+                                    .extra_items()
+                                    .skip(extras.start)
+                                    .take(extras.len()),
+                            ),
+                    )
                 }
                 _ => return,
             };

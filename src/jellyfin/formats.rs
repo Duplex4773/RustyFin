@@ -219,7 +219,7 @@ impl Server {
             };
             let page: Page = read(request.query(&[
                 ("userId", self.user_id()?),
-                ("fields", "MediaSources"),
+                ("fields", "MediaSources,MediaStreams"),
                 ("enableImages", "false"),
                 ("enableUserData", "false"),
                 ("limit", "64"),

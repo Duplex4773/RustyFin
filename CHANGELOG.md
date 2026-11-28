@@ -2,6 +2,25 @@
 
 Entries are grouped by development build, newest first. Builds tested locally and published together have separate entries. Earlier entries include their Git commit.
 
+## 2026-11-28 - Continue Watching removal notice
+
+- The removal notice uses Discover’s dark glass and white **Undo** button. Long episode titles wrap above the confirmation, leaving **Undo** and dismiss available in narrow windows. Screen readers receive the full removal message.
+
+## 2026-11-28 - Shelf and panel animations
+
+- Discover’s shelf arrows ease between pages and respond when you reverse direction mid-scroll. Continue Watching cards close the gap after a removal, and a restored card rises and fades in when you choose **Undo**.
+- Settings and Customise Home slide in beneath a stationary header. The **Mixed formats** breakdown unfolds on its card. With Windows animations turned off, each change appears immediately.
+
+## 2026-11-28 - Remove individual episodes from Continue Watching
+
+- Open a Continue Watching card’s **⋯** menu or right-click it to remove a film, one episode or the whole series. Removing an episode allows another eligible episode of the same show to appear. Playback progress is preserved.
+- **Undo** restores the last removal. Earlier removals can be restored in **Customise Home** for the current RustyFin profile.
+
+## 2026-11-28 - Quality labels on Discover and title pages
+
+- Restored the black resolution, dynamic range and codec strip on Continue Watching, Recently Added TV and Movies, episode thumbnails, extras and More like this. Shows with different episode formats have an expandable **Mixed formats** label.
+- Series details also show the resume or next episode’s quality beside its title when Jellyfin supplies it.
+
 ## 2026-11-28 - Smoother ambient gradients
 
 - Dark ambient lighting now preserves fractional colour levels and uses a stationary dither at the display’s native pixel density. This smooths visible bands across large windows, including the indigo background used when artwork is unavailable.

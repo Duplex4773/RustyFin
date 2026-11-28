@@ -446,7 +446,18 @@ impl Library {
                                 },
                             ))
                             .child(header)
-                            .child(body),
+                            .child(reveal_panel(
+                                body,
+                                ("settings-page", page as usize),
+                                point(
+                                    px(if page == SettingsPage::Overview {
+                                        -8.
+                                    } else {
+                                        8.
+                                    }),
+                                    px(0.),
+                                ),
+                            )),
                     ),
                 ),
         )

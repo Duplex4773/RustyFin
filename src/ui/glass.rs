@@ -466,7 +466,11 @@ pub(super) struct ShelfLight {
 }
 
 impl ShelfLight {
-    pub fn position(&mut self, target: f32, w: &Window) -> f32 {
+    pub fn position(&mut self, target: f32, animate: bool, w: &Window) -> f32 {
+        if !animate {
+            self.travel = None;
+            return target;
+        }
         let Some((from, to, start)) = self.travel else {
             self.travel = Some((target, target, Instant::now()));
             return target;

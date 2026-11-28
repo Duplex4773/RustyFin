@@ -524,7 +524,24 @@ impl Library {
             })
     }
 
-    pub(super) fn discover(&mut self, tint: Rgba, w: &Window, cx: &mut Context<Self>) -> Div {
+    pub(super) fn discover(
+        &mut self,
+        tint: Rgba,
+        animate: bool,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.advance_shelf(animate, w);
+        let progress = self
+            .state
+            .continue_reflow
+            .as_ref()
+            .map_or(1., |motion| motion.progress(Instant::now()));
+        if animate && progress < 1. && self.shelves.iter().any(|s| s.kind == ShelfKind::Continue) {
+            w.request_animation_frame();
+        } else {
+            self.state.continue_reflow = None;
+        }
         self.state.settings_nav.begin_layout();
         let mut scroll = div()
             .id("discover-scroll")
@@ -702,7 +719,7 @@ impl Library {
                     accessibility::Poster::Home { row, index: i },
                     selected,
                 );
-                strip = strip.child(card.when(frosted, |d| {
+                let card = card.when(frosted, |d| {
                     d.on_hover(cx.listener(move |s, inside, _, cx| {
                         if *inside {
                             s.shelf_light.hovered = Some(i);
@@ -713,7 +730,20 @@ impl Library {
                         }
                         cx.notify();
                     }))
-                }));
+                });
+                if frosted {
+                    let card = card.when_some(self.state.continue_reflow.as_ref(), |d, motion| {
+                        let (slot, opacity) = motion.position(item, i, progress);
+                        d.relative()
+                            .left(px((slot - i as f32) * (width + SHELF_GAP)))
+                            .top(px(5. * (1. - opacity)))
+                            .opacity(opacity)
+                    });
+                    // ScrollHandle measures this fixed slot. Hit testing follows the moving card inside.
+                    strip = strip.child(div().w(px(width)).flex_none().child(card));
+                } else {
+                    strip = strip.child(card);
+                }
             }
             let mut heading = div()
                 .flex()
@@ -729,16 +759,18 @@ impl Library {
                         .enumerate()
                 {
                     let handle = handle.clone();
+                    let kind = shelf.kind;
                     arrows = arrows.child(
-                        circle(("home-page", row * 2 + i), name, code, 29.).on_click(
-                            move |_, _, cx| {
-                                let x = (handle.offset().x
-                                    + px((width + SHELF_GAP) * columns * dir))
-                                .clamp(-handle.max_offset().width, px(0.));
-                                handle.set_offset(point(x, px(0.)));
-                                cx.refresh_windows();
+                        circle(("home-page", row * 2 + i), name, code, 29.).on_click(cx.listener(
+                            move |s, _, _, cx| {
+                                s.page_shelf(
+                                    kind,
+                                    &handle,
+                                    px((width + SHELF_GAP) * columns * dir),
+                                    cx,
+                                );
                             },
-                        ),
+                        )),
                     );
                 }
                 heading = heading.child(arrows);
@@ -759,8 +791,10 @@ impl Library {
                     .map_or(available * 0.24, |i| {
                         i as f32 * (width + SHELF_GAP) + width / 2. + f32::from(handle.offset().x)
                     });
-                let center =
-                    GLASS_INSET + self.shelf_light.position(target.clamp(0., available), w);
+                let center = GLASS_INSET
+                    + self
+                        .shelf_light
+                        .position(target.clamp(0., available), animate, w);
                 section = section.px(px(CONTENT_GUTTER - GLASS_INSET));
                 frosted_panel(self.artwork.glass.frost_layer(), tint, center, width)
             } else {
@@ -771,28 +805,29 @@ impl Library {
         }
         let mut body = div().relative().flex_1().min_w_0().min_h_0().child(scroll);
         if let Some(removed) = &self.home_undo {
-            let notice = div()
+            let notice = glass_panel(div())
                 .block_mouse_except_scroll()
+                .bg(rgba(POPOVER_GLASS))
                 .flex()
                 .items_center()
-                .gap_2()
-                .p_2()
-                .pl_3()
-                .rounded_lg()
-                .bg(rgb(ACTIVE))
-                .border_1()
-                .border_color(rgba(0xffffff2b))
-                .shadow_lg()
+                .gap(px(8.))
+                .py(px(10.))
+                .pl(px(16.))
+                .pr(px(8.))
                 .child(
-                    label(
-                        format!("Removed {} from Continue Watching", removed.name),
-                        14.,
-                        TEXT,
-                    )
-                    .line_clamp(2),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(title(removed.name.clone(), 14.).line_height(px(18.)))
+                        .child(
+                            label("Removed from Continue Watching", 12., BODY).line_height(px(16.)),
+                        ),
                 )
                 .child(
-                    pill("undo-continue-removal", "Undo", None, true)
+                    pill("undo-continue-removal", "Undo", None, PillStyle::Primary)
                         .track_focus(&self.home_undo_focus)
                         .on_key_down(cx.listener(|s, event: &KeyDownEvent, w, cx| {
                             // The key that confirms removal can be released after Undo gains focus.
@@ -812,21 +847,26 @@ impl Library {
                         })),
                 )
                 .child(
-                    glyph_button("Dismiss notification", "\u{e711}").on_click(cx.listener(
-                        |s, _, w, cx| {
+                    icon_button("Dismiss notification", icon("\u{e711}", 14.))
+                        .text_color(rgb(META))
+                        .hover(|d| d.bg(rgba(HOVER_FILL)).text_color(rgb(TEXT)))
+                        .on_click(cx.listener(|s, _, w, cx| {
                             s.focus.focus(w);
                             s.home_undo = None;
                             cx.notify();
-                        },
-                    )),
-                );
+                        })),
+                )
+                .children(accessibility::status(&format!(
+                    "Removed {} from Continue Watching",
+                    removed.name
+                )));
             body = body.child(
                 div()
                     .absolute()
-                    .bottom(px(20.))
-                    .right(px(20.))
-                    .max_w(relative(0.9))
-                    .child(reveal_menu(
+                    .bottom(px(CONTENT_GUTTER))
+                    .right(px(CONTENT_GUTTER))
+                    .w((w.viewport_size().width - px(2. * CONTENT_GUTTER)).clamp(px(0.), px(360.)))
+                    .child(reveal_panel(
                         notice,
                         "continue-undo-notice",
                         point(px(0.), px(6.)),
@@ -899,6 +939,7 @@ pub(super) fn continue_menu(
     item: Item,
 ) -> impl Fn(gpui_component::menu::PopupMenu, WeakEntity<Library>) -> gpui_component::menu::PopupMenu
 + Clone {
+    use crate::ui::home::RemovalScope;
     move |menu, owner| {
         let details = item.clone();
         let view = owner.clone();
@@ -953,22 +994,42 @@ pub(super) fn continue_menu(
             );
         }
         let target = item.clone();
-        let dismissed = item.clone();
         let view = owner.clone();
-        menu.item(
+        menu = menu.item(
             accessibility::menu_item("Mark watched").on_click(move |_, w, cx| {
                 cx.stop_propagation();
                 let _ = view.update(cx, |s, cx| {
                     s.set_item_flag(target.clone(), false, true, w, cx)
                 });
             }),
-        )
-        .item(
-            accessibility::menu_item("Remove from Continue Watching").on_click(move |_, w, cx| {
-                cx.stop_propagation();
-                let _ = owner.update(cx, |s, cx| s.dismiss_continue(&dismissed, w, cx));
-            }),
-        )
+        );
+        let label = if item.kind == "Episode" {
+            "Remove episode from Continue Watching"
+        } else {
+            "Remove from Continue Watching"
+        };
+        let target = item.clone();
+        let view = owner.clone();
+        menu = menu.item(accessibility::menu_item(label).on_click(move |_, w, cx| {
+            cx.stop_propagation();
+            let _ = view.update(cx, |s, cx| {
+                s.dismiss_continue(&target, RemovalScope::Item, w, cx)
+            });
+        }));
+        if item.kind == "Episode" && item.series_id.is_some() {
+            let target = item.clone();
+            menu = menu.item(
+                accessibility::menu_item("Remove series from Continue Watching").on_click(
+                    move |_, w, cx| {
+                        cx.stop_propagation();
+                        let _ = owner.update(cx, |s, cx| {
+                            s.dismiss_continue(&target, RemovalScope::Series, w, cx)
+                        });
+                    },
+                ),
+            );
+        }
+        menu
     }
 }
 

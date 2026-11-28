@@ -161,6 +161,8 @@ struct ViewState {
     shelf: Option<usize>,
     scroll: ScrollHandle,
     wheel_motion: Option<scrolling::WheelMotion>,
+    shelf_motion: Option<scrolling::WheelMotion>,
+    continue_reflow: Option<home::ContinueReflow>,
     wall: catalog_wall::CatalogWall,
     catalog_cover: Option<screens::CatalogCover>,
 }
@@ -209,6 +211,8 @@ impl ViewState {
             shelf: None,
             scroll: ScrollHandle::new(),
             wheel_motion: None,
+            shelf_motion: None,
+            continue_reflow: None,
             wall: Default::default(),
             catalog_cover: None,
         }
@@ -689,6 +693,8 @@ impl Library {
         self.state.settings_nav.remember(window, cx);
         self.search_keyboard = None;
         self.state.wheel_motion = None;
+        self.state.shelf_motion = None;
+        self.state.continue_reflow = None;
         let has_search_results =
             matches!(self.state.screen, Screen::Search(_)) && !self.state.search.groups.is_empty();
         self.state.reload_on_return |= !has_search_results
@@ -1874,6 +1880,7 @@ impl Library {
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.state.wheel_motion = None;
+        self.state.shelf_motion = None;
         if self.capture_shortcut(&event.keystroke, cx) {
             return;
         }

@@ -77,8 +77,11 @@ impl Library {
                     .child(icon(if open { "\u{e70e}" } else { "\u{e70d}" }, 9.)),
             );
         if open {
+            let mut rows = div().overflow_hidden();
+            let mut height = px(0.);
             for (name, values) in formats.details() {
-                panel = panel.child(
+                height += px(13.);
+                rows = rows.child(
                     div()
                         .flex()
                         .items_center()
@@ -88,6 +91,16 @@ impl Library {
                 );
             }
             panel = panel
+                .child(if scrolling::animations_enabled() {
+                    rows.with_animation(
+                        "format-breakdown",
+                        Animation::new(Duration::from_millis(145)).with_easing(ease_out_quint()),
+                        move |d, t| d.max_h(height * t).opacity(t),
+                    )
+                    .into_any_element()
+                } else {
+                    rows.into_any_element()
+                })
                 .on_mouse_down_out(cx.listener(|s, _, _, cx| {
                     s.formats.expanded = None;
                     cx.notify();
@@ -106,13 +119,24 @@ impl Library {
             .collect::<Vec<_>>()
             .join("\n");
         Some(
-            tip(panel, details)
-                .on_click(cx.listener(move |s, _, _, cx| {
-                    cx.stop_propagation();
-                    s.formats.expanded = if open { None } else { Some(key.clone()) };
-                    cx.notify();
-                }))
-                .into_any_element(),
+            accessibility::button(
+                panel,
+                format!("Mixed formats for {}. {details}", item.name),
+                None,
+                false,
+            )
+            .focusable()
+            .tab_stop(true)
+            .focus(|d| d.border_1().border_color(rgb(TEXT)))
+            .when(!open, |d| {
+                d.tooltip(move |w, cx| Tooltip::new(details.clone()).build(w, cx))
+            })
+            .on_click(cx.listener(move |s, _, _, cx| {
+                cx.stop_propagation();
+                s.formats.expanded = if open { None } else { Some(key.clone()) };
+                cx.notify();
+            }))
+            .into_any_element(),
         )
     }
 }

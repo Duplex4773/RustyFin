@@ -51,11 +51,19 @@ pub fn home_shelves<'a>(
     let mut shows = Vec::new();
     let mut films = Vec::new();
     for [resume, next, tv, movies] in sources {
-        watching.extend(
-            catalog::continue_watching(resume.to_vec(), next.to_vec())
-                .into_iter()
-                .filter(&include_watching),
-        );
+        // Remove hidden episodes before choosing one card per series, so a
+        // different eligible episode can still appear.
+        watching.extend(catalog::continue_watching(
+            resume
+                .iter()
+                .filter(|i| include_watching(i))
+                .cloned()
+                .collect(),
+            next.iter()
+                .filter(|i| include_watching(i))
+                .cloned()
+                .collect(),
+        ));
         shows.extend_from_slice(tv);
         films.extend_from_slice(movies);
     }

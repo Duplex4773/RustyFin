@@ -2,37 +2,81 @@ use super::*;
 use crate::jellyfin::federation::{HomeFeed, home_shelves};
 use crate::preferences::{DismissedTitle, HomePreferences, ResumeKey};
 
-fn resume_title(item: &Item) -> &str {
-    if item.kind == "Episode" {
-        item.series_id.as_deref().unwrap_or(&item.id)
-    } else {
-        &item.id
+#[derive(Clone, Copy)]
+pub(super) enum RemovalScope {
+    Item,
+    Series,
+}
+
+struct CardPosition {
+    origin: Option<String>,
+    id: String,
+    slot: f32,
+    opacity: f32,
+}
+
+pub(super) struct ContinueReflow {
+    before: Vec<CardPosition>,
+    start: Instant,
+}
+
+impl ContinueReflow {
+    pub(super) fn progress(&self, now: Instant) -> f32 {
+        let t = (now.duration_since(self.start).as_secs_f32() / 0.19).min(1.);
+        1. - (1. - t).powi(3)
+    }
+
+    // Store slots instead of pixels so resizing the window mid-transition
+    // keeps the moving cards aligned with the current shelf geometry.
+    pub(super) fn position(&self, item: &Item, index: usize, t: f32) -> (f32, f32) {
+        let slot = index as f32;
+        let Some(old) = self
+            .before
+            .iter()
+            .find(|p| p.origin == item.origin && p.id == item.id)
+        else {
+            return (slot, t);
+        };
+        (
+            slot + (old.slot - slot) * (1. - t),
+            old.opacity + (1. - old.opacity) * t,
+        )
     }
 }
 
 impl DismissedTitle {
-    fn from_item(item: &Item) -> Self {
+    fn from_item(item: &Item, scope: RemovalScope) -> Self {
         let mut copies = Vec::new();
         for copy in std::iter::once(item).chain(&item.copies) {
             if let Some(account) = &copy.origin {
+                let title = match scope {
+                    RemovalScope::Item => &copy.id,
+                    RemovalScope::Series => copy.series_id.as_ref().unwrap_or(&copy.id),
+                };
                 let key = ResumeKey {
                     account: account.clone(),
-                    title: resume_title(copy).to_owned(),
+                    title: title.clone(),
                 };
                 if !copies.contains(&key) {
                     copies.push(key);
                 }
             }
         }
-        Self {
-            name: item.series_name.as_ref().unwrap_or(&item.name).clone(),
-            copies,
-        }
+        let name = match (&item.series_name, scope) {
+            (Some(series), RemovalScope::Series) => series.clone(),
+            (Some(_), RemovalScope::Item) => format!("{} · {}", item.caption(), item.name),
+            (None, _) => item.name.clone(),
+        };
+        Self { name, copies }
     }
 
     fn contains(&self, item: &Item) -> bool {
         self.copies.iter().any(|key| {
-            item.origin.as_ref() == Some(&key.account) && resume_title(item) == key.title
+            // Jellyfin item and series IDs share a namespace. Existing profile
+            // entries for a whole series already store its series ID.
+            item.origin.as_ref() == Some(&key.account)
+                && (item.id == key.title
+                    || (item.kind == "Episode" && item.series_id.as_ref() == Some(&key.title)))
         })
     }
 }
@@ -232,16 +276,51 @@ impl Home {
 }
 
 impl Library {
+    fn capture_continue_positions(&mut self) {
+        let previous = self.state.continue_reflow.take();
+        if !matches!(self.state.screen, Screen::Discover) || !scrolling::animations_enabled() {
+            return;
+        }
+        let now = Instant::now();
+        let before = self
+            .shelves
+            .iter()
+            .find(|shelf| shelf.kind == ShelfKind::Continue)
+            .into_iter()
+            .flat_map(|shelf| &shelf.items)
+            .enumerate()
+            .map(|(index, item)| {
+                let (slot, opacity) = previous.as_ref().map_or((index as f32, 1.), |motion| {
+                    motion.position(item, index, motion.progress(now))
+                });
+                CardPosition {
+                    origin: item.origin.clone(),
+                    id: item.id.clone(),
+                    slot,
+                    opacity,
+                }
+            })
+            .collect();
+        self.state.continue_reflow = Some(ContinueReflow { before, start: now });
+    }
+
     pub(super) fn save_home(&mut self, cx: &mut Context<Self>) {
         self.publish_home();
         self.save_preferences(cx);
     }
 
-    pub(super) fn dismiss_continue(&mut self, item: &Item, w: &mut Window, cx: &mut Context<Self>) {
-        let dismissal = DismissedTitle::from_item(item);
+    pub(super) fn dismiss_continue(
+        &mut self,
+        item: &Item,
+        scope: RemovalScope,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dismissal = DismissedTitle::from_item(item, scope);
         if dismissal.copies.is_empty() || self.prefs.home.dismissed.contains(&dismissal) {
             return;
         }
+        self.capture_continue_positions();
         self.prefs.home.dismissed.push(dismissal.clone());
         self.home_undo = Some(dismissal);
         self.shelf_light.hovered = None;
@@ -259,6 +338,7 @@ impl Library {
     }
 
     pub(super) fn restore_continue(&mut self, title: &DismissedTitle, cx: &mut Context<Self>) {
+        self.capture_continue_positions();
         self.prefs
             .home
             .dismissed
@@ -394,7 +474,9 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use super::{DismissedTitle, Home, HomeFeed, HomePreferences, Item, Server, ShelfKind};
+    use super::{
+        DismissedTitle, Home, HomeFeed, HomePreferences, Item, RemovalScope, Server, ShelfKind,
+    };
     use crate::preferences::Preferences;
 
     fn server(name: &str) -> Server {
@@ -446,7 +528,7 @@ mod tests {
         );
         let mut prefs = HomePreferences::default();
         let shelf = home.shelves(&prefs);
-        let dismissal = DismissedTitle::from_item(&shelf[0].items[0]);
+        let dismissal = DismissedTitle::from_item(&shelf[0].items[0], RemovalScope::Series);
         assert_eq!(dismissal.copies.len(), 2);
         prefs.dismissed.push(dismissal);
         assert!(home.shelves(&prefs).is_empty());
@@ -469,6 +551,84 @@ mod tests {
         );
         prefs.dismissed.clear();
         assert_eq!(home.shelves(&prefs)[0].items[0].position(), 200);
+    }
+
+    #[test]
+    fn removing_one_episode_leaves_other_episodes_eligible_and_undo_keeps_progress() {
+        let mut home = Home::default();
+        home.sync(&[server("primary")]);
+        let origin = home.sources[0].origin.clone();
+        let episode = |id: &str| Item {
+            kind: "Episode".into(),
+            series_id: Some("show".into()),
+            series_name: Some("The show".into()),
+            ..item(id)
+        };
+        let resume = home.begin(&origin, HomeFeed::Resume).unwrap();
+        home.finish(
+            &origin,
+            HomeFeed::Resume,
+            resume,
+            Ok(vec![episode("first"), item("film")]),
+        );
+        let next = home.begin(&origin, HomeFeed::NextUp).unwrap();
+        home.finish(
+            &origin,
+            HomeFeed::NextUp,
+            next,
+            Ok(vec![episode("first"), episode("second")]),
+        );
+        let mut prefs = HomePreferences::default();
+        let shelf = home.shelves(&prefs);
+        for card in &shelf[0].items {
+            prefs
+                .dismissed
+                .push(DismissedTitle::from_item(card, RemovalScope::Item));
+        }
+        let restored: HomePreferences =
+            serde_json::from_slice(&serde_json::to_vec(&prefs).unwrap()).unwrap();
+        let shelf = home.shelves(&restored);
+        assert_eq!(shelf[0].items.len(), 1);
+        assert_eq!(shelf[0].items[0].id, "second");
+        prefs.dismissed.clear();
+        let shelf = home.shelves(&prefs);
+        assert_eq!(
+            shelf[0]
+                .items
+                .iter()
+                .map(|i| (i.id.as_str(), i.position()))
+                .collect::<Vec<_>>(),
+            [("first", 200), ("film", 200)]
+        );
+    }
+
+    #[test]
+    fn shelf_reflow_tracks_the_same_copy_and_resumes_from_its_visible_position() {
+        use super::{CardPosition, ContinueReflow, Duration, Instant};
+        let start = Instant::now();
+        let mut film = item("film");
+        film.origin = Some("local".into());
+        let motion = ContinueReflow {
+            start,
+            before: vec![CardPosition {
+                origin: film.origin.clone(),
+                id: film.id.clone(),
+                slot: 2.5,
+                opacity: 0.5,
+            }],
+        };
+        assert_eq!(
+            motion.position(&film, 1, motion.progress(start)),
+            (2.5, 0.5)
+        );
+        let halfway = motion.progress(start + Duration::from_millis(95));
+        assert_eq!(motion.position(&film, 1, halfway), (1.1875, 0.9375));
+        film.origin = Some("other".into());
+        assert_eq!(motion.position(&film, 1, halfway), (1., halfway));
+        assert_eq!(
+            motion.position(&film, 1, motion.progress(start + Duration::from_secs(1))),
+            (1., 1.)
+        );
     }
 
     #[test]

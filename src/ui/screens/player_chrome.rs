@@ -1005,7 +1005,7 @@ impl Library {
                 ),
                 size(px(panel_width), px(panel_height)),
             );
-            root = root.child(floating(bounds).child(reveal_menu(
+            root = root.child(floating(bounds).child(reveal_panel(
                 div().size_full().occlude().child(menu),
                 ("playback-menu-reveal", self.generation as usize),
                 if episodes {

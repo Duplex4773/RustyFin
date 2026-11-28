@@ -302,7 +302,8 @@ impl Library {
                         .object_fit(ObjectFit::Cover),
                 )
             })
-            .child(overlay);
+            .child(overlay)
+            .children(self.card_format_strip(episode, &("episode", index).into(), image_width, cx));
         let heading = episode.index_number.map_or_else(
             || episode.name.clone(),
             |n| format!("{n}. {}", episode.name),

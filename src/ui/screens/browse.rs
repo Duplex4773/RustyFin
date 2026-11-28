@@ -122,15 +122,13 @@ impl Library {
             .when_some(open, |d, (_, menu)| {
                 d.child(
                     div().absolute().left_0().top(px(34.)).child(
-                        deferred(
-                            anchored()
-                                .snap_to_window_with_margin(px(8.))
-                                .child(reveal_menu(
-                                    div().child(menu.clone()),
-                                    ("popup-reveal", menu.entity_id()),
-                                    point(px(0.), px(-5.)),
-                                )),
-                        )
+                        deferred(anchored().snap_to_window_with_margin(px(8.)).child(
+                            reveal_panel(
+                                div().child(menu.clone()),
+                                ("popup-reveal", menu.entity_id()),
+                                point(px(0.), px(-5.)),
+                            ),
+                        ))
                         .with_priority(2),
                     ),
                 )
@@ -288,7 +286,7 @@ impl Library {
             .flex_none()
             .child(row);
         if self.filters_open {
-            header = header.child(reveal_menu(
+            header = header.child(reveal_panel(
                 self.browse_filters(tab, q, cx),
                 "browse-filters-reveal",
                 point(px(0.), px(-4.)),

@@ -343,6 +343,7 @@ impl Library {
             {
                 let extra = extra.clone();
                 let mut still = div()
+                    .relative()
                     .w_full()
                     .h(px(108.))
                     .rounded_md()
@@ -368,7 +369,12 @@ impl Library {
                         extra.name.clone(),
                         cx,
                     )
-                    .child(still)
+                    .child(still.children(self.card_format_strip(
+                        &extra,
+                        &("extra-still", i).into(),
+                        EXTRA_WIDTH,
+                        cx,
+                    )))
                     .child(title(extra.name.clone(), 14.).truncate())
                     .on_click(cx.listener(move |s, _, w, cx| s.open_item(extra.clone(), w, cx))),
                 );

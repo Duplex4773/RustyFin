@@ -6,6 +6,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Page,
+    Shelf(ShelfKind),
     PlayerMenu(PlayerMenu),
     Lyrics,
 }
@@ -141,6 +142,62 @@ impl ViewState {
 }
 
 impl Library {
+    pub(super) fn page_shelf(
+        &mut self,
+        kind: ShelfKind,
+        handle: &ScrollHandle,
+        delta: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let offset = handle.offset();
+        let limit = handle.max_offset().width;
+        self.state.shelf_motion = if animations_enabled() {
+            WheelMotion::push(
+                self.state.shelf_motion.take(),
+                Surface::Shelf(kind),
+                offset.x,
+                delta,
+                limit,
+                Instant::now(),
+            )
+        } else {
+            handle.set_offset(point((offset.x + delta).clamp(-limit, px(0.)), offset.y));
+            None
+        };
+        cx.notify();
+    }
+
+    pub(super) fn advance_shelf(&mut self, animate: bool, w: &Window) {
+        let Some(mut motion) = self.state.shelf_motion.take() else {
+            return;
+        };
+        let Some((_, handle)) = self
+            .shelves
+            .iter()
+            .zip(&self.shelf_scroll)
+            .find(|(shelf, _)| motion.surface == Surface::Shelf(shelf.kind))
+        else {
+            return;
+        };
+        let offset = handle.offset();
+        if offset.x != motion.position {
+            return;
+        }
+        motion.advance(Instant::now(), handle.max_offset().width);
+        handle.set_offset(point(
+            if animate {
+                motion.position
+            } else {
+                motion.target
+            },
+            offset.y,
+        ));
+        if animate && motion.position != motion.target {
+            self.state.shelf_motion = Some(motion);
+            w.request_animation_frame();
+        }
+    }
+
     pub(super) fn smooth_scrolling(
         &mut self,
         w: &Window,

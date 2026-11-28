@@ -111,7 +111,13 @@ impl Library {
                                 .child(div().h_full().w(relative(fraction)).bg(rgb(TEXT))),
                         )
                     })
-                    .child(label(caption, 14., BODY).min_w_0().truncate()),
+                    .child(label(caption, 14., BODY).min_w_0().truncate())
+                    .children(
+                        self.formats
+                            .for_item(ep)
+                            .filter(|formats| !formats.mixed())
+                            .and_then(|formats| format_strip::strip(&formats, false)),
+                    ),
             );
             let ep = ep.clone();
             actions = actions.child(
@@ -286,7 +292,7 @@ impl Library {
         let mut head = div().child(hero);
         match self.state.detail_panel {
             Some(DetailPanel::More) => {
-                head = head.child(reveal_menu(
+                head = head.child(reveal_panel(
                     div()
                         .track_focus(&self.detail_panel_focus)
                         .tab_stop(false)
@@ -316,7 +322,7 @@ impl Library {
                 }
             }
             Some(DetailPanel::Editions) => {
-                head = head.child(reveal_menu(
+                head = head.child(reveal_panel(
                     div()
                         .track_focus(&self.detail_panel_focus)
                         .tab_stop(false)

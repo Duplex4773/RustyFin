@@ -4,7 +4,7 @@ use std::{collections::HashSet, io::Read};
 
 pub const PAGE_SIZE: usize = 36;
 pub const LIBRARY_PAGE_SIZE: usize = 90;
-const FIELDS: &str = "Overview,Genres,MediaSources,ProviderIds";
+const FIELDS: &str = "Overview,Genres,MediaSources,MediaStreams,ProviderIds";
 const MOVING_PICTURES: &str = "Movie,Series,Episode,Video,Audio,MusicAlbum,MusicArtist,MusicVideo";
 
 pub fn catalog_initial(sort_name: Option<&str>, name: &str) -> char {
@@ -309,7 +309,10 @@ impl Server {
         let page: Page = read(self.get(&["Items", id, "Similar"]).query(&[
             ("userId", self.user_id()?),
             ("limit", "24"),
-            ("fields", "MediaSources,DateLastMediaAdded,ProviderIds"),
+            (
+                "fields",
+                "MediaSources,MediaStreams,DateLastMediaAdded,ProviderIds",
+            ),
         ]))?;
         let origin = self.identity().map(|account| account.key());
         let mut seen = HashSet::from([id.to_owned()]);
@@ -488,7 +491,10 @@ impl Server {
                     ("userId", user),
                     ("includeItemTypes", "Movie"),
                     ("groupItems", "false"),
-                    ("fields", "DateCreated,Genres,People,Overview,MediaSources"),
+                    (
+                        "fields",
+                        "DateCreated,Genres,People,Overview,MediaSources,MediaStreams",
+                    ),
                     ("limit", "24"),
                 ]));
             }
@@ -638,14 +644,9 @@ impl Server {
                 .get(&["Items"])
                 .query(&[("parentId", item.id.as_str()), ("sortBy", "SortName")]),
         };
-        let fields = if item.kind == "Series" {
-            "Overview,Genres,MediaSources,MediaStreams,ProviderIds"
-        } else {
-            FIELDS
-        };
         request = request.query(&[
             ("userId", self.user_id()?),
-            ("fields", fields),
+            ("fields", FIELDS),
             ("startIndex", &offset.to_string()),
             ("limit", &PAGE_SIZE.to_string()),
         ]);
